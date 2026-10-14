@@ -1,0 +1,236 @@
+<title>串口分路器界面样稿</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* 页面：说明在上，三张实际像素大小的窗口样稿（默认小窗、展开数据、设置）依次排列，各配要点 */
+:root {
+  --bg: #f3f4f6;
+  --fg: #1d232b;
+  --muted: #5d6673;
+  --line: #d9dde3;
+  --card: #ffffff;
+  --font-ui: "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg: #14171c; --fg: #e6e9ee; --muted: #9aa3af; --line: #2c323b; --card: #1b1f26; color-scheme: dark; }
+}
+:root[data-theme="dark"] { --bg: #14171c; --fg: #e6e9ee; --muted: #9aa3af; --line: #2c323b; --card: #1b1f26; color-scheme: dark; }
+
+body { background: var(--bg); color: var(--fg); font-family: var(--font-ui); font-size: 15px; line-height: 1.6; }
+.page { max-width: 1000px; margin: 0 auto; padding-inline: 16px; padding-block: 32px 64px; display: grid; gap: 40px; }
+header h1 { font-size: 26px; margin: 0 0 6px; text-wrap: balance; }
+header p { margin: 0; color: var(--muted); max-width: 66ch; }
+section { display: grid; gap: 12px; }
+section h2 { font-size: 18px; margin: 0; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+section h2 .tag { font-size: 13px; font-weight: 500; color: var(--muted); }
+.notes { margin: 0; padding-left: 1.2em; color: var(--muted); display: grid; gap: 2px; max-width: 72ch; }
+.notes b { color: var(--fg); font-weight: 600; }
+.stage { overflow-x: auto; padding: 20px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); display: flex; gap: 24px; align-items: flex-start; }
+
+/* ---------- 工业上位机风格窗口（固定浅灰，模拟 Windows 经典控件） ---------- */
+.w { --face: #f0f0f0; --edge: #a0a0a0; --dark: #696969; --hi: #ffffff; --text: #000000; --dim: #6d6d6d; --sel: #0078d7;
+  background: var(--face); color: var(--text); font: 12px/1.35 "Microsoft YaHei", "Noto Sans SC", sans-serif; border: 1px solid #7a7a7a; box-shadow: 0 6px 18px rgba(0,0,0,.18); display: flex; flex-direction: column; flex: none; }
+.w.s { width: 300px; height: 334px; }
+.w.l { width: 780px; height: 334px; }
+.cap { height: 26px; background: #ffffff; display: flex; align-items: center; gap: 6px; padding: 0 0 0 8px; border-bottom: 1px solid #dcdcdc; }
+.cap .ico { width: 14px; height: 14px; background: #2b5797; color: #fff; font-size: 9px; display: grid; place-items: center; font-weight: 700; }
+.cap .sp { flex: 1; }
+.cap .b { width: 34px; text-align: center; color: #333; }
+.tabs { display: flex; padding: 4px 4px 0; gap: 0; border-bottom: 1px solid var(--edge); }
+.tab { padding: 2px 9px; border: 1px solid var(--edge); border-bottom: 0; margin-right: -1px; background: #e6e6e6; display: flex; gap: 5px; align-items: center; position: relative; top: 1px; }
+.tab.on { background: var(--face); padding-top: 3px; margin-top: -2px; z-index: 1; }
+.led { width: 8px; height: 8px; border-radius: 50%; border: 1px solid rgba(0,0,0,.35); display: inline-block; flex: none; }
+.led.g { background: radial-gradient(circle at 35% 35%, #9dff9d, #1bb31b); }
+.led.x { background: radial-gradient(circle at 35% 35%, #e0e0e0, #8c8c8c); }
+.led.r { background: radial-gradient(circle at 35% 35%, #ff9d9d, #d11b1b); }
+.main { flex: 1; display: grid; grid-template-columns: 290px 1fr; min-height: 0; padding: 5px; gap: 5px; }
+.w.s .main { grid-template-columns: 1fr; }
+.left { display: grid; gap: 5px; align-content: start; }
+fieldset { border: 1px solid #c8c8c8; box-shadow: 1px 1px 0 #fff inset, 1px 1px 0 #fff; margin: 0; padding: 3px 6px 6px; min-width: 0; }
+legend { padding: 0 3px; color: #003399; }
+.form { display: grid; grid-template-columns: 52px 1fr 44px 1fr; gap: 4px 6px; align-items: center; }
+.form .full { grid-column: 2 / 5; }
+.cb { background: #fff; border: 1px solid #7a7a7a; height: 20px; display: flex; align-items: center; justify-content: space-between; padding: 0 0 0 4px; font-variant-numeric: tabular-nums; }
+.cb .dd { width: 16px; height: 100%; border-left: 1px solid #c8c8c8; background: #f0f0f0; display: grid; place-items: center; font-size: 8px; color: #333; }
+.vps { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; }
+.ck { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.ck .bx { width: 12px; height: 12px; border: 1px solid #333; background: #fff; display: grid; place-items: center; font-size: 10px; line-height: 1; }
+.ck.dis { color: #9a9a9a; }
+.ck.dis .bx { border-color: #a8a8a8; background: #f4f4f4; }
+.ck .n { color: var(--dim); font-size: 11px; }
+.btns { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.btn { height: 24px; border: 1px solid #adadad; background: linear-gradient(#f6f6f6, #dddddd); display: flex; align-items: center; justify-content: center; gap: 6px; }
+.btn.def { border-color: var(--sel); box-shadow: inset 0 0 0 1px #9ccaf0; }
+.recv { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.recv fieldset { flex: 1; display: flex; flex-direction: column; min-height: 0; padding-bottom: 4px; }
+.screen { flex: 1; background: #fff; border: 1px solid #7a7a7a; font: 12px/1.4 Consolas, "JetBrains Mono", monospace; padding: 2px 4px; overflow: hidden; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.screen .t { color: #808080; } .screen .tx { color: #0000c8; } .screen .rx { color: #000; } .screen .ok { color: #008000; }
+.tools { display: flex; gap: 10px; align-items: center; padding-top: 4px; }
+.tools .sp { flex: 1; }
+.tools .btn { height: 20px; padding: 0 10px; }
+.sb { height: 20px; display: flex; gap: 2px; padding: 1px 2px; border-top: 1px solid #d0d0d0; }
+.sb span { border: 1px solid; border-color: #a0a0a0 #fff #fff #a0a0a0; padding: 0 5px; display: flex; align-items: center; gap: 4px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sb .grow { flex: 1; }
+
+/* 设置窗 */
+.w.d { width: 300px; height: auto; }
+.w.d .body { padding: 6px; display: grid; gap: 6px; }
+.w.d .row { display: grid; grid-template-columns: 74px 1fr; gap: 6px; align-items: center; }
+.list { background: #fff; border: 1px solid #7a7a7a; font: 12px/1.5 Consolas, monospace; }
+.list div { display: grid; grid-template-columns: 1fr 1fr 1.2fr; padding: 0 4px; }
+.list .h { background: #f0f0f0; border-bottom: 1px solid #c8c8c8; font-family: "Microsoft YaHei", sans-serif; }
+.list .sel { background: var(--sel); color: #fff; }
+.w.d .foot { display: flex; gap: 5px; justify-content: flex-end; }
+.w.d .foot .btn { padding: 0 10px; }
+</style>
+
+<div class="page">
+<header>
+  <h1>串口分路器 · 工业上位机风格</h1>
+  <p>按 1:1 像素画的，样稿里多大，窗口就多大。示例数据：分组“红外口”把 COM6（2400 8E1）拆给 COM11 和 COM12，正在运行；“调试口”停着。</p>
+</header>
+
+<section>
+  <h2>① 默认 <span class="tag">300 × 334，数据区收起</span></h2>
+  <div class="stage">
+    <div class="w s">
+      <div class="cap"><span class="ico">⇶</span>串口分路器<span class="sp"></span><span class="b">—</span><span class="b">✕</span></div>
+      <div class="tabs">
+        <div class="tab on"><span class="led g"></span>红外口</div>
+        <div class="tab"><span class="led x"></span>调试口</div>
+        <div class="tab">＋</div>
+      </div>
+      <div class="main">
+        <div class="left">
+          <fieldset><legend>物理口</legend>
+            <div class="form">
+              <span>端口号</span><span class="cb full">COM6 USB-SERIAL CH340<span class="dd">▼</span></span>
+              <span>波特率</span><span class="cb">2400<span class="dd">▼</span></span>
+              <span>校验位</span><span class="cb">Even<span class="dd">▼</span></span>
+              <span>数据位</span><span class="cb">8<span class="dd">▼</span></span>
+              <span>停止位</span><span class="cb">1<span class="dd">▼</span></span>
+            </div>
+          </fieldset>
+          <fieldset><legend>转发到虚拟口</legend>
+            <div class="vps">
+              <span class="ck"><span class="bx">✓</span>COM11</span>
+              <span class="ck"><span class="bx">✓</span>COM12</span>
+              <span class="ck dis"><span class="bx"></span>COM13 <span class="n">调试口</span></span>
+              <span class="ck"><span class="bx"></span>COM14</span>
+            </div>
+          </fieldset>
+          <div class="btns">
+            <span class="btn def"><span class="led g"></span>关闭串口</span>
+            <span class="btn">显示数据 &gt;&gt;</span>
+          </div>
+          <span class="ck"><span class="bx">✓</span>录制到数据库</span>
+        </div>
+      </div>
+      <div class="sb"><span>运行中</span><span>RX:18624</span><span>TX:3482</span><span class="grow">丢:0</span><span>设置</span></div>
+    </div>
+  </div>
+  <ul class="notes">
+    <li><b>和常见串口调试助手一个路数</b>：灰底、分组框、标签加下拉一行一项，按钮带指示灯，绿灯=已打开，灰灯=关闭，红灯=出错或等待重试。</li>
+    <li><b>按钮文字跟着状态变</b>：“打开串口 / 关闭串口”，比“开始 / 停止”更符合上位机习惯。</li>
+    <li><b>底部状态栏分格</b>：状态、RX、TX 字节数、丢弃数，最右“设置”。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>② 点“显示数据 &gt;&gt;” <span class="tag">780 × 334，按钮变成“&lt;&lt; 收起”</span></h2>
+  <div class="stage">
+    <div class="w l">
+      <div class="cap"><span class="ico">⇶</span>串口分路器<span class="sp"></span><span class="b">—</span><span class="b">☐</span><span class="b">✕</span></div>
+      <div class="tabs">
+        <div class="tab on"><span class="led g"></span>红外口</div>
+        <div class="tab"><span class="led x"></span>调试口</div>
+        <div class="tab">＋</div>
+      </div>
+      <div class="main">
+        <div class="left">
+          <fieldset><legend>物理口</legend>
+            <div class="form">
+              <span>端口号</span><span class="cb full">COM6 USB-SERIAL CH340<span class="dd">▼</span></span>
+              <span>波特率</span><span class="cb">2400<span class="dd">▼</span></span>
+              <span>校验位</span><span class="cb">Even<span class="dd">▼</span></span>
+              <span>数据位</span><span class="cb">8<span class="dd">▼</span></span>
+              <span>停止位</span><span class="cb">1<span class="dd">▼</span></span>
+            </div>
+          </fieldset>
+          <fieldset><legend>转发到虚拟口</legend>
+            <div class="vps">
+              <span class="ck"><span class="bx">✓</span>COM11</span>
+              <span class="ck"><span class="bx">✓</span>COM12</span>
+              <span class="ck dis"><span class="bx"></span>COM13 <span class="n">调试口</span></span>
+              <span class="ck"><span class="bx"></span>COM14</span>
+            </div>
+          </fieldset>
+          <div class="btns">
+            <span class="btn def"><span class="led g"></span>关闭串口</span>
+            <span class="btn">&lt;&lt; 收起</span>
+          </div>
+          <span class="ck"><span class="bx">✓</span>录制到数据库</span>
+        </div>
+        <div class="recv">
+          <fieldset><legend>数据</legend>
+            <div class="screen">
+              <div><span class="t">[13:40:58.002]</span> <span class="ok">已打开 COM6 2400,E,8,1 会话#42</span></div>
+              <div><span class="t">[13:41:02.118]</span> <span class="tx">TX←COM11 FE FE FE 68 20 26 09 07 09 15 19 68 01 0C 00 …</span></div>
+              <div><span class="t">[13:41:03.904]</span> <span class="rx">RX 68 20 26 09 07 09 15 19 68 81 31 00 26 10 14 13 …</span></div>
+              <div><span class="t">[13:41:09.552]</span> <span class="tx">TX←COM12 41 54 2B 43 53 51 0D 0A |AT+CSQ..|</span></div>
+              <div><span class="t">[13:41:09.731]</span> <span class="rx">RX 2B 43 53 51 3A 20 32 33 2C 39 39 0D 0A |+CSQ: 23,99..|</span></div>
+              <div><span class="t">[13:41:15.006]</span> <span class="rx">RX 5B 44 42 47 5D 20 66 72 65 65 7A 65 |[DBG] freeze|</span></div>
+              <div><span class="t">[13:41:21.447]</span> <span class="rx">RX 68 20 26 09 07 09 15 19 68 81 31 00 26 10 14 13 …</span></div>
+              <div><span class="t">[13:41:27.880]</span> <span class="rx">RX 68 20 26 09 07 09 15 19 68 81 31 00 26 10 14 13 …</span></div>
+              <div><span class="t">[13:41:33.105]</span> <span class="tx">TX←COM11 FE FE FE 68 20 26 09 07 09 15 19 68 01 0C 00 …</span></div>
+            </div>
+            <div class="tools">
+              <span class="ck"><span class="bx"></span>暂停</span>
+              <span class="ck"><span class="bx">✓</span>自动滚动</span>
+              <span class="ck"><span class="bx">✓</span>HEX</span>
+              <span class="sp"></span>
+              <span class="btn">清空</span>
+            </div>
+          </fieldset>
+        </div>
+      </div>
+      <div class="sb"><span>运行中 00:42:17</span><span>RX:18624</span><span>TX:3482</span><span class="grow">丢:0</span><span>设置</span></div>
+    </div>
+  </div>
+  <ul class="notes">
+    <li><b>数据区是白底等宽字的接收框</b>：时间戳带方括号，TX 蓝字标来源虚拟口；“HEX”取消勾选就按文本显示。</li>
+    <li>收起后窗口缩回 300 宽；展开与否会被记住。</li>
+  </ul>
+</section>
+
+<section>
+  <h2>③ 设置 <span class="tag">点状态栏“设置”弹出</span></h2>
+  <div class="stage">
+    <div class="w d">
+      <div class="cap"><span class="ico">⇶</span>设置<span class="sp"></span><span class="b">✕</span></div>
+      <div class="body">
+        <fieldset><legend>常规</legend>
+          <div style="display:grid;gap:4px">
+            <div class="row"><span>外观</span><span class="cb">浅色<span class="dd">▼</span></span></div>
+            <div class="row"><span>关闭窗口时</span><span class="cb">每次询问<span class="dd">▼</span></span></div>
+            <div class="row"><span>数据保留</span><span class="cb">30 天<span class="dd">▼</span></span></div>
+            <span class="ck"><span class="bx">✓</span>开机自启</span>
+          </div>
+        </fieldset>
+        <fieldset><legend>虚拟口对（com0com）</legend>
+          <div class="list">
+            <div class="h"><span>软件用</span><span>本程序用</span><span>分组</span></div>
+            <div><span>COM11</span><span>CNCB0</span><span>红外口</span></div>
+            <div class="sel"><span>COM12</span><span>CNCB1</span><span>红外口</span></div>
+            <div><span>COM13</span><span>CNCB2</span><span>调试口</span></div>
+            <div><span>COM14</span><span>CNCB3</span><span>—</span></div>
+          </div>
+          <div class="foot" style="margin-top:5px"><span class="btn">新建</span><span class="btn">删除</span><span class="btn">数据目录</span></div>
+        </fieldset>
+        <div class="foot"><span class="btn def" style="width:70px">确定</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+</div>
