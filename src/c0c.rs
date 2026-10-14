@@ -15,6 +15,21 @@ pub struct Pair {
     pub index: u32,
     pub a_name: String,
     pub b_name: String,
+    pub b_hidden: bool,
+}
+
+#[derive(Clone, Debug)]
+pub enum HiddenMode {
+    Text(String),
+    Dword(u32),
+}
+impl HiddenMode {
+    fn enabled(&self) -> bool {
+        match self {
+            Self::Text(value) => value.eq_ignore_ascii_case("yes"),
+            Self::Dword(value) => *value == 1,
+        }
+    }
 }
 
 fn parameter_name(name: &str) -> Option<(u32, bool)> {
@@ -51,12 +66,16 @@ fn merge(
 }
 
 pub fn parse_pairs(
-    parameters: &[(String, Option<String>)],
+    parameters: &[(String, Option<String>, Option<HiddenMode>)],
     serial_comm: &[(String, String)],
 ) -> Vec<Pair> {
     let mut map = BTreeMap::new();
-    for (key, value) in parameters {
+    let mut hidden = BTreeMap::new();
+    for (key, value, mode) in parameters {
         if let Some((index, a)) = parameter_name(key) {
+            if !a {
+                hidden.insert(index, mode.as_ref().is_some_and(HiddenMode::enabled));
+            }
             let name = value
                 .as_ref()
                 .filter(|name| !name.is_empty())
@@ -78,6 +97,7 @@ pub fn parse_pairs(
                 index,
                 a_name: a?,
                 b_name: b.unwrap_or_else(|| format!("CNCB{index}")),
+                b_hidden: hidden.get(&index).copied().unwrap_or(false),
             })
         })
         .collect()
@@ -92,11 +112,21 @@ pub fn detect_pairs() -> Vec<Pair> {
         hklm.open_subkey("SYSTEM\\CurrentControlSet\\Services\\com0com\\Parameters")
     {
         for key in parameters.enum_keys().filter_map(Result::ok) {
-            let name = parameters
-                .open_subkey(&key)
-                .ok()
+            let port = parameters.open_subkey(&key).ok();
+            let name = port
+                .as_ref()
                 .and_then(|k| k.get_value::<String, _>("PortName").ok());
-            values.push((key, name));
+            let mode = port.as_ref().and_then(|k| {
+                k.get_value::<String, _>("HiddenMode")
+                    .ok()
+                    .map(HiddenMode::Text)
+                    .or_else(|| {
+                        k.get_value::<u32, _>("HiddenMode")
+                            .ok()
+                            .map(HiddenMode::Dword)
+                    })
+            });
+            values.push((key, name, mode));
         }
     }
     if let Ok(comm) = hklm.open_subkey("HARDWARE\\DEVICEMAP\\SERIALCOMM") {
@@ -194,22 +224,71 @@ pub fn setup_path() -> Option<PathBuf> {
 pub enum Manage {
     Create(String),
     Delete(u32),
+    HideBackends(Vec<u32>),
+}
+fn create_args(name: &str) -> Result<String, String> {
+    Ok(format!(
+        "--silent install PortName={} HiddenMode=yes",
+        core::normalize_port_name(name)?
+    ))
+}
+fn hide_script(indices: &[u32]) -> String {
+    let mut indices = indices.to_vec();
+    indices.sort_unstable();
+    indices.dedup();
+    let mut script = "@echo off\r\nset \"serial_split_failed=0\"\r\n".to_string();
+    for index in indices {
+        script.push_str(&format!("\"setupc.exe\" --silent change CNCB{index} HiddenMode=yes\r\nif errorlevel 1 set \"serial_split_failed=1\"\r\n"));
+    }
+    script.push_str("exit /b %serial_split_failed%\r\n");
+    script
+}
+struct TemporaryScript(PathBuf);
+impl Drop for TemporaryScript {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 pub fn manage(action: Manage) -> Result<(), String> {
     let setup = setup_path().ok_or("没装 com0com")?;
     let args = match action {
-        Manage::Create(name) => format!(
-            "--silent install PortName={} -",
-            core::normalize_port_name(&name)?
-        ),
+        Manage::Create(name) => create_args(&name)?,
         Manage::Delete(index) => format!("--silent remove {index}"),
+        Manage::HideBackends(indices) => {
+            if indices.is_empty() {
+                return Ok(());
+            }
+            // ASCII script; setupc resolves in the explicitly supplied working directory.
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "serial-split-hide-{}-{stamp}.cmd",
+                std::process::id()
+            ));
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .map_err(|e| format!("无法创建隐藏命令：{e}"))?;
+            let script = TemporaryScript(path);
+            std::io::Write::write_all(&mut file, hide_script(&indices).as_bytes())
+                .map_err(|e| format!("无法写入隐藏命令：{e}"))?;
+            drop(file);
+            let cmd = PathBuf::from(std::env::var_os("SystemRoot").ok_or("未找到 SystemRoot")?)
+                .join("System32/cmd.exe");
+            return elevated(
+                &cmd,
+                &format!("/d /s /c \"\"{}\"\"", script.0.display()),
+                setup.parent().unwrap(),
+            );
+        }
     };
-    let (verb, file, params, dir) = (
-        wide("runas"),
-        wide(&setup),
-        wide(args),
-        wide(setup.parent().unwrap()),
-    );
+    elevated(&setup, &args, setup.parent().unwrap())
+}
+fn elevated(file: &std::path::Path, args: &str, directory: &std::path::Path) -> Result<(), String> {
+    let (verb, file, params, dir) = (wide("runas"), wide(file), wide(args), wide(directory));
     unsafe {
         let mut info: SHELLEXECUTEINFOW = std::mem::zeroed();
         info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
@@ -310,19 +389,21 @@ mod tests {
                 index: 0,
                 a_name: "COM11".into(),
                 b_name: "CNCB0".into(),
+                b_hidden: false,
             },
             Pair {
                 index: 1,
                 a_name: "COM12".into(),
                 b_name: "CNCB1".into(),
+                b_hidden: false,
             },
         ]
     }
     #[test]
     fn actual_registry_without_b_parameter_keys() {
         let parameters = vec![
-            ("CNCA1".into(), Some("COM12".into())),
-            ("CNCA0".into(), Some("COM11".into())),
+            ("CNCA1".into(), Some("COM12".into()), None),
+            ("CNCA0".into(), Some("COM11".into()), None),
         ];
         let serial_comm = vec![
             ("\\Device\\com0com21".into(), "CNCB1".into()),
@@ -339,8 +420,8 @@ mod tests {
     #[test]
     fn parameter_names_win_and_default_names_are_preserved() {
         let parameters = vec![
-            ("CNCA3".into(), None),
-            ("CNCB3".into(), Some("BACKEND3".into())),
+            ("CNCA3".into(), None, None),
+            ("CNCB3".into(), Some("BACKEND3".into()), None),
         ];
         let devices = vec![
             ("\\Device\\com0com13".into(), "COM99".into()),
@@ -351,9 +432,66 @@ mod tests {
             vec![Pair {
                 index: 3,
                 a_name: "CNCA3".into(),
-                b_name: "BACKEND3".into()
+                b_name: "BACKEND3".into(),
+                b_hidden: false,
             }]
         );
+    }
+    #[test]
+    fn hidden_backends_without_serialcomm_entries() {
+        for mode in [
+            HiddenMode::Text("yes".into()),
+            HiddenMode::Text("YES".into()),
+            HiddenMode::Dword(1),
+        ] {
+            let parameters = vec![
+                ("CNCA0".into(), Some("COM11".into()), None),
+                ("CNCB0".into(), None, Some(mode)),
+                ("CNCA1".into(), Some("COM12".into()), None),
+                ("CNCB1".into(), None, None),
+            ];
+            let serial_comm = vec![
+                ("\\Device\\com0com10".into(), "COM11".into()),
+                ("\\Device\\com0com11".into(), "COM12".into()),
+            ];
+            let mut expected = installed_pairs();
+            expected[0].b_hidden = true;
+            assert_eq!(parse_pairs(&parameters, &serial_comm), expected);
+            assert_eq!(parse_pairs(&parameters, &[]), expected);
+        }
+    }
+    #[test]
+    fn only_b_hiddenmode_yes_or_one_is_hidden() {
+        for mode in [
+            None,
+            Some(HiddenMode::Text("no".into())),
+            Some(HiddenMode::Dword(0)),
+            Some(HiddenMode::Dword(2)),
+        ] {
+            let parameters = vec![
+                (
+                    "CNCA0".into(),
+                    Some("COM11".into()),
+                    Some(HiddenMode::Dword(1)),
+                ),
+                ("CNCB0".into(), None, mode),
+            ];
+            assert!(!parse_pairs(&parameters, &[])[0].b_hidden);
+        }
+    }
+    #[test]
+    fn setup_commands_hide_b_and_batch_deduplicates_all_targets() {
+        assert_eq!(
+            create_args("com14").unwrap(),
+            "--silent install PortName=COM14 HiddenMode=yes"
+        );
+        assert!(create_args("COM14 & bad").is_err());
+        let script = hide_script(&[4, 0, 4]);
+        assert_eq!(script.matches("--silent change").count(), 2);
+        assert!(script.contains("\"setupc.exe\" --silent change CNCB0 HiddenMode=yes\r\n"));
+        assert!(script.contains("\"setupc.exe\" --silent change CNCB4 HiddenMode=yes\r\n"));
+        assert_eq!(script.matches("if errorlevel 1").count(), 2);
+        assert!(script.ends_with("exit /b %serial_split_failed%\r\n"));
     }
     #[test]
     fn virtual_ports_filtered_and_test_switch_includes_only_a() {

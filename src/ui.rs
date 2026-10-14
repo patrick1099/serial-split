@@ -321,7 +321,7 @@ slint::slint! {
         in property <[PairRow]> pairs; in-out property <int> pair-index: -1;
         in-out property <int> theme-index: 0; in-out property <int> close-index: 0; in property <[string]> close-actions;
         in-out property <string> retention-text: "30"; in-out property <bool> autostart;
-        in property <string> message; in property <bool> busy;
+        in property <string> message; in property <bool> busy; in property <bool> has-unhidden;
         in-out property <bool> new-dialog: false; in-out property <string> new-port;
         callback theme-setting(int); callback close-setting(int); callback retention-input(string); callback startup(bool); callback select-pair(int);
         callback create-pair(); callback manage(int); callback open-data(); callback done();
@@ -339,13 +339,16 @@ slint::slint! {
                     Rectangle {background: Theme.field; border-width: 1px; border-color: Theme.control-edge; vertical-stretch: 1;
                         VerticalLayout {padding: 1px; spacing: 0px;
                             Rectangle {height: 19px; background: Theme.face;
-                                HorizontalLayout {padding-left: 4px; Text {text: "软件用"; color: Theme.text;} Text {text: "本程序用"; color: Theme.text;} Text {text: "分组"; color: Theme.text;} }
+                                HorizontalLayout {padding-left: 4px; spacing: 0px; Text {width: 84px; text: "软件用"; color: Theme.text;} Text {width: 84px; text: "本程序用"; color: Theme.text;} Text {horizontal-stretch: 1; text: "分组"; color: Theme.text;} }
                             }
                             ListView {for pair[i] in root.pairs: Rectangle {height: 19px; background: root.pair-index == i ? Theme.selection : Theme.field;
-                                HorizontalLayout {padding-left: 4px; Text {text: pair.a; color: root.pair-index == i ? Theme.selected-text : Theme.text; font-family: "Consolas";} Text {text: pair.b; color: root.pair-index == i ? Theme.selected-text : Theme.text; font-family: "Consolas";} Text {text: pair.owner == "" ? "—" : pair.owner; color: root.pair-index == i ? Theme.selected-text : Theme.text; overflow: elide;} }
+                                HorizontalLayout {padding-left: 4px; spacing: 0px; Text {width: 84px; text: pair.a; overflow: elide; color: root.pair-index == i ? Theme.selected-text : Theme.text; font-family: "Consolas";} Text {width: 84px; text: pair.b; overflow: elide; color: root.pair-index == i ? Theme.selected-text : Theme.text; font-family: "Consolas";} Text {horizontal-stretch: 1; text: pair.owner == "" ? "—" : pair.owner; color: root.pair-index == i ? Theme.selected-text : Theme.text; overflow: elide;} }
                                 TouchArea {clicked => {root.pair-index = i;root.select-pair(i);} }
                             } }
                         }
+                    }
+                    if root.has-unhidden: HorizontalLayout {alignment: end;
+                        ClassicButton {width: 112px; text: "隐藏本程序端"; enabled: !root.busy; clicked => {root.manage(3);} }
                     }
                     HorizontalLayout {spacing: 5px; alignment: end;
                         ClassicButton {width: 48px; text: "新建"; enabled: !root.busy; clicked => {root.create-pair();} }
@@ -845,6 +848,7 @@ impl App {
             s.set_close_index(w.get_close_index());
             s.set_autostart(w.get_autostart());
             s.set_pairs(w.get_pairs());
+            s.set_has_unhidden(self.pairs.iter().any(|p| !p.b_hidden));
             s.set_pair_index(w.get_pair_index());
             s.set_message(w.get_manage_message());
             s.set_busy(w.get_manage_busy());
@@ -1455,6 +1459,17 @@ pub fn bind(w: &AppWindow, app: Rc<RefCell<App>>) -> Result<(), slint::PlatformE
                     return;
                 }
                 c0c::Manage::Create(name)
+            } else if action == 3 {
+                let indices: Vec<_> = a
+                    .pairs
+                    .iter()
+                    .filter(|p| !p.b_hidden)
+                    .map(|p| p.index)
+                    .collect();
+                if indices.is_empty() {
+                    return;
+                }
+                c0c::Manage::HideBackends(indices)
             } else {
                 let Some(pair) = a.pairs.get(w.get_pair_index() as usize) else {
                     return;

@@ -42,6 +42,7 @@ fn pairs() -> Vec<Pair> {
             index: i,
             a_name: format!("COM{}", 11 + i),
             b_name: format!("CNCB{i}"),
+            b_hidden: i != 3,
         })
         .collect()
 }
@@ -145,7 +146,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             2=> {
                 a.borrow_mut().apply_detection(pairs(),Ok(ports()),&w);fixture(&w);
                 let s=a.borrow().settings_window().unwrap();s.set_pair_index(1);s.invoke_select_pair(1);s.set_autostart(true);
-                snapshot(s.window(),&dir.join("v2-settings.bmp"),(300,354));s.invoke_done();w.invoke_expand(false);
+                assert!(s.get_has_unhidden());
+                snapshot(s.window(),&dir.join("v2-settings.bmp"),(300,354));
+                s.invoke_manage(3);assert!(s.get_message().contains("不会调用 setupc"));
+                let mut hidden=pairs();for p in &mut hidden {p.b_hidden=true;}
+                a.borrow_mut().apply_detection(hidden,Ok(ports()),&w);assert!(!s.get_has_unhidden());
+                a.borrow_mut().apply_detection(pairs(),Ok(ports()),&w);assert!(s.get_has_unhidden());
+                s.invoke_done();w.invoke_expand(false);
             }
             3=> {fixture(&w);a.borrow_mut().request_close(&w);snapshot(w.window(),&dir.join("v2-close.bmp"),(300,334));w.invoke_close_choice(0,false);w.invoke_expand(true);w.invoke_theme_setting(1);}
             4=> {fixture(&w);snapshot(w.window(),&dir.join("v2-dark-expanded.bmp"),(780,334));}
