@@ -1,5 +1,9 @@
 # HANDOFF
 
+## 待办
+
+- **补一个操作 serial-split 的 skill，供其他 AI 使用**（用户 2026-10-14 提出，v0.1.0 发布后做）。至少覆盖：读 `%LOCALAPPDATA%\serial-split\capture.sqlite3` 里的录制数据（只读、短事务，WAL 模式可边录边读）；读写 `%APPDATA%\serial-split\settings.ini` 里的分组配置（改之前先确认程序没在运行或会被覆盖）；com0com 虚拟口对的查看、新建、隐藏 B 端；单实例与 `--minimized` / `--include-virtual` 参数；联调方法（`examples/loopback.rs`）。
+
 ## 已谈定
 
 - 2026-10-14 · 用户 · 目标：一个物理 COM 口拆成多个虚拟 COM 口，让协议模拟器和原来的串口助手同时用同一个物理口。急用。
