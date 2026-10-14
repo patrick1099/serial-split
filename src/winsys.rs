@@ -116,7 +116,7 @@ pub fn fatal(message: &str) {
 }
 pub fn foreground() {
     unsafe {
-        let hwnd = FindWindowW(ptr::null(), wide("serial-split").as_ptr());
+        let hwnd = FindWindowW(ptr::null(), wide("串口分路器").as_ptr());
         if !hwnd.is_null() {
             ShowWindow(hwnd, SW_RESTORE);
             SetForegroundWindow(hwnd);

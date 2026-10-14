@@ -38,7 +38,7 @@ fn start() -> Result<(), Box<dyn std::error::Error>> {
         instance,
         tray,
     )));
-    ui::bind(&window, app.clone());
+    ui::bind(&window, app.clone())?;
     app.borrow_mut().initialize(&window);
     let timer = ui::timer(&window, app.clone());
     if !minimized {

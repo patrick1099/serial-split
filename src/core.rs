@@ -114,8 +114,31 @@ impl Group {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Theme {
+    Light,
+    Dark,
+}
+impl Theme {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+    pub fn from_key(value: &str) -> Option<Self> {
+        match value {
+            "light" => Some(Self::Light),
+            "dark" => Some(Self::Dark),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
+    pub theme: Theme,
+    pub show_data: bool,
     pub close_action: CloseAction,
     pub retention_days: u32,
     pub groups: Vec<Group>,
@@ -124,6 +147,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
+            theme: Theme::Light,
+            show_data: false,
             close_action: CloseAction::Ask,
             retention_days: DEFAULT_RETENTION_DAYS,
             groups: Vec::new(),
@@ -193,6 +218,16 @@ pub fn parse_settings(text: &str) -> Settings {
         let (key, value) = (key.trim(), value.trim());
         match current {
             None => match key {
+                "theme" => {
+                    if let Some(theme) = Theme::from_key(value) {
+                        s.theme = theme;
+                    }
+                }
+                "show_data" => {
+                    if let Some(show) = parse_bool(value) {
+                        s.show_data = show;
+                    }
+                }
                 "close_action" => {
                     if let Some(c) = CloseAction::from_key(value) {
                         s.close_action = c;
@@ -262,6 +297,11 @@ pub fn parse_settings(text: &str) -> Settings {
 
 pub fn format_settings(s: &Settings) -> String {
     let mut out = String::new();
+    out.push_str(&format!(
+        "theme={}\nshow_data={}\n",
+        s.theme.key(),
+        s.show_data
+    ));
     out.push_str(&format!("close_action={}\n", s.close_action.key()));
     out.push_str(&format!("retention_days={}\n", s.retention_days));
     for g in &s.groups {
@@ -421,6 +461,37 @@ pub fn display_line(hms: &str, dir: Direction, source: Option<&str>, raw: &[u8])
     )
 }
 
+pub fn display_text_line(hms: &str, dir: Direction, source: Option<&str>, raw: &[u8]) -> String {
+    let text: String = String::from_utf8_lossy(raw)
+        .chars()
+        .map(|c| if c.is_control() { '.' } else { c })
+        .collect();
+    let tag = match (dir, source) {
+        (Direction::Tx, Some(source)) => format!("TX←{source}"),
+        _ => dir.key().into(),
+    };
+    format!("[{hms}] {tag} {text}")
+}
+
+pub fn display_hex_line(hms: &str, dir: Direction, source: Option<&str>, raw: &[u8]) -> String {
+    let shown = &raw[..raw.len().min(DISPLAY_HEX_LIMIT)];
+    let hex = shown
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let tag = match (dir, source) {
+        (Direction::Tx, Some(source)) => format!("TX←{source}"),
+        _ => dir.key().into(),
+    };
+    let more = if shown.len() < raw.len() {
+        format!(" …(+{})", raw.len() - shown.len())
+    } else {
+        String::new()
+    };
+    format!("[{hms}] {tag} {hex}{more}")
+}
+
 pub fn human_bytes(n: u64) -> String {
     if n < 1024 {
         format!("{n} B")
@@ -471,6 +542,7 @@ mod tests {
             close_action: CloseAction::Tray,
             retention_days: 7,
             groups: vec![g1, g2],
+            ..Settings::default()
         }
     }
 
@@ -573,5 +645,39 @@ mod tests {
         let settings = sample();
         assert_eq!(settings.output_owner("com11", 3).map(|g| g.id), Some(1));
         assert!(settings.output_owner("com11", 1).is_none());
+    }
+    #[test]
+    fn ui_settings_old_bad_and_new_values() {
+        let old = parse_settings("close_action=tray\n[group.1]\nname=旧分组\n");
+        assert_eq!(old.theme, Theme::Light);
+        assert!(!old.show_data);
+        let bad = parse_settings("theme=unknown\nshow_data=maybe\n");
+        assert_eq!(bad.theme, Theme::Light);
+        assert!(!bad.show_data);
+        let mut new = sample();
+        new.theme = Theme::Dark;
+        new.show_data = true;
+        assert_eq!(parse_settings(&format_settings(&new)), new);
+    }
+    #[test]
+    fn new_display_modes_preserve_text_and_replace_controls() {
+        assert_eq!(
+            display_text_line(
+                "12:34:56.789",
+                Direction::Tx,
+                Some("COM11"),
+                b"AT\r\n\0\t\xff"
+            ),
+            "[12:34:56.789] TX←COM11 AT....�"
+        );
+        assert_eq!(
+            display_text_line("t", Direction::Rx, None, "中文🙂\n".as_bytes()),
+            "[t] RX 中文🙂."
+        );
+        assert_eq!(
+            display_hex_line("t", Direction::Rx, None, &[0, 0x68, 255]),
+            "[t] RX 00 68 FF"
+        );
+        assert!(display_hex_line("t", Direction::Rx, None, &[1; 70]).ends_with("…(+6)"));
     }
 }

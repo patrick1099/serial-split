@@ -147,7 +147,7 @@ fn filter_physical_ports(
                 ""
             };
             Some(Port {
-                label: format!("{}{suffix}", p.port_name),
+                label: port_label(&p, suffix),
                 name: p.port_name,
             })
         })
@@ -167,6 +167,22 @@ fn filter_physical_ports(
     }
     ports.sort_by_key(|p| core::port_sort_key(&p.name));
     ports
+}
+fn port_label(port: &serialport::SerialPortInfo, suffix: &str) -> String {
+    let description = match &port.port_type {
+        serialport::SerialPortType::UsbPort(usb) => usb
+            .product
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .or(usb.manufacturer.as_deref()),
+        _ => None,
+    }
+    .filter(|s| !s.trim().is_empty());
+    format!(
+        "{}{}{suffix}",
+        port.port_name,
+        description.map(|s| format!(" {s}")).unwrap_or_default()
+    )
 }
 pub fn setup_path() -> Option<PathBuf> {
     ["ProgramFiles(x86)", "ProgramFiles"]
@@ -248,6 +264,32 @@ pub fn open_directory(path: &std::path::Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn usb_description_is_display_only_and_keeps_suffix() {
+        let mut port = serialport::SerialPortInfo {
+            port_name: "COM6".into(),
+            port_type: serialport::SerialPortType::UsbPort(serialport::UsbPortInfo {
+                vid: 0x1a86,
+                pid: 0x7523,
+                serial_number: None,
+                manufacturer: Some("WCH".into()),
+                product: Some("USB-SERIAL CH340".into()),
+            }),
+        };
+        assert_eq!(
+            port_label(&port, "（虚拟）"),
+            "COM6 USB-SERIAL CH340（虚拟）"
+        );
+        if let serialport::SerialPortType::UsbPort(usb) = &mut port.port_type {
+            usb.product = None;
+        }
+        assert_eq!(port_label(&port, ""), "COM6 WCH");
+        if let serialport::SerialPortType::UsbPort(usb) = &mut port.port_type {
+            usb.product = Some(" ".into());
+        }
+        assert_eq!(port_label(&port, ""), "COM6 WCH");
+        assert_eq!(port.port_name, "COM6");
+    }
     #[test]
     fn registry_names_and_merge() {
         assert_eq!(parameter_name("CNCA12"), Some((12, true)));
