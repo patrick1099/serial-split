@@ -139,9 +139,39 @@ impl Theme {
 pub struct Settings {
     pub theme: Theme,
     pub show_data: bool,
+    pub size_collapsed: WindowSize,
+    pub size_expanded: WindowSize,
     pub close_action: CloseAction,
     pub retention_days: u32,
     pub groups: Vec<Group>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowSize {
+    pub width: u32,
+    pub height: u32,
+}
+impl WindowSize {
+    pub const COLLAPSED: Self = Self {
+        width: 300,
+        height: 334,
+    };
+    pub const EXPANDED: Self = Self {
+        width: 780,
+        height: 334,
+    };
+    fn parse(value: &str, minimum: Self) -> Option<Self> {
+        let (width, height) = value.split_once('x')?;
+        let size = Self {
+            width: width.parse().ok()?,
+            height: height.parse().ok()?,
+        };
+        (size.width >= minimum.width
+            && size.height >= minimum.height
+            && size.width <= i32::MAX as u32
+            && size.height <= i32::MAX as u32)
+            .then_some(size)
+    }
 }
 
 impl Default for Settings {
@@ -149,6 +179,8 @@ impl Default for Settings {
         Settings {
             theme: Theme::Light,
             show_data: false,
+            size_collapsed: WindowSize::COLLAPSED,
+            size_expanded: WindowSize::EXPANDED,
             close_action: CloseAction::Ask,
             retention_days: DEFAULT_RETENTION_DAYS,
             groups: Vec::new(),
@@ -228,6 +260,14 @@ pub fn parse_settings(text: &str) -> Settings {
                         s.show_data = show;
                     }
                 }
+                "size_collapsed" => {
+                    s.size_collapsed = WindowSize::parse(value, WindowSize::COLLAPSED)
+                        .unwrap_or(WindowSize::COLLAPSED)
+                }
+                "size_expanded" => {
+                    s.size_expanded = WindowSize::parse(value, WindowSize::EXPANDED)
+                        .unwrap_or(WindowSize::EXPANDED)
+                }
                 "close_action" => {
                     if let Some(c) = CloseAction::from_key(value) {
                         s.close_action = c;
@@ -303,6 +343,13 @@ pub fn format_settings(s: &Settings) -> String {
         s.show_data
     ));
     out.push_str(&format!("close_action={}\n", s.close_action.key()));
+    out.push_str(&format!(
+        "size_collapsed={}x{}\nsize_expanded={}x{}\n",
+        s.size_collapsed.width,
+        s.size_collapsed.height,
+        s.size_expanded.width,
+        s.size_expanded.height
+    ));
     out.push_str(&format!("retention_days={}\n", s.retention_days));
     for g in &s.groups {
         out.push_str(&format!("\n[group.{}]\n", g.id));
@@ -550,6 +597,63 @@ mod tests {
     fn settings_roundtrip() {
         let s = sample();
         assert_eq!(parse_settings(&format_settings(&s)), s);
+    }
+    #[test]
+    fn window_sizes_roundtrip_and_old_ini_defaults() {
+        let old = parse_settings("[group.1]\nname=旧配置\n");
+        assert_eq!(old.size_collapsed, WindowSize::COLLAPSED);
+        assert_eq!(old.size_expanded, WindowSize::EXPANDED);
+        let s = parse_settings("size_collapsed=380x480\nsize_expanded=1000x500\n");
+        assert_eq!(
+            s.size_collapsed,
+            WindowSize {
+                width: 380,
+                height: 480
+            }
+        );
+        assert_eq!(
+            s.size_expanded,
+            WindowSize {
+                width: 1000,
+                height: 500
+            }
+        );
+        assert_eq!(parse_settings(&format_settings(&s)), s);
+    }
+    #[test]
+    fn invalid_or_small_window_sizes_use_defaults() {
+        for value in [
+            "",
+            "bad",
+            "380",
+            "380x",
+            "380x480x1",
+            "-380x480",
+            "380x-480",
+            "0x0",
+            "299x480",
+            "380x333",
+            "2147483648x480",
+            "999999999999x480",
+        ] {
+            assert_eq!(
+                parse_settings(&format!("size_collapsed={value}\n")).size_collapsed,
+                WindowSize::COLLAPSED,
+                "{value}"
+            );
+        }
+        for value in ["bad", "779x500", "1000x333", "300x334"] {
+            assert_eq!(
+                parse_settings(&format!("size_expanded={value}\n")).size_expanded,
+                WindowSize::EXPANDED,
+                "{value}"
+            );
+        }
+        let s = parse_settings(
+            "size_collapsed=380x480\nsize_collapsed=bad\nsize_expanded=1000x500\nsize_expanded=0x0\n",
+        );
+        assert_eq!(s.size_collapsed, WindowSize::COLLAPSED);
+        assert_eq!(s.size_expanded, WindowSize::EXPANDED);
     }
 
     #[test]

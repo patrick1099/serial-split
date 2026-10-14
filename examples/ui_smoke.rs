@@ -37,7 +37,10 @@ fn snapshot(window: &slint::Window, path: &Path, expected: (u32, u32)) {
     );
 }
 fn pairs() -> Vec<Pair> {
-    (0..4)
+    many_pairs(4)
+}
+fn many_pairs(count: u32) -> Vec<Pair> {
+    (0..count)
         .map(|i| Pair {
             index: i,
             a_name: format!("COM{}", 11 + i),
@@ -51,6 +54,24 @@ fn ports() -> Vec<Port> {
         name: "COM6".into(),
         label: "COM6 USB-SERIAL CH340".into(),
     }]
+}
+fn click(w: &AppWindow, x: f32, y: f32) {
+    let position = slint::LogicalPosition::new(x, y);
+    let button = slint::platform::PointerEventButton::Left;
+    w.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+    w.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
+    w.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+}
+fn wheel(w: &AppWindow, delta: f32) {
+    w.window()
+        .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+            position: slint::LogicalPosition::new(w.get_output_x() + 20.0, w.get_output_y() + 8.0),
+            delta_x: 0.0,
+            delta_y: delta,
+        });
 }
 fn fixture(w: &AppWindow) {
     let mut groups = w.get_groups().iter().collect::<Vec<_>>();
@@ -92,7 +113,68 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(restored.groups.len(), 2);
         assert_eq!(restored.groups[0].name, "已改名红外口");
         assert_eq!(restored.groups[0].baud, 4800);
-        println!("PASS independent restart restored theme, expansion, group name and baud");
+        assert_eq!(
+            restored.size_collapsed,
+            core::WindowSize {
+                width: 380,
+                height: 480
+            }
+        );
+        assert_eq!(
+            restored.size_expanded,
+            core::WindowSize {
+                width: 1000,
+                height: 500
+            }
+        );
+        let w = ui::create_window()?;
+        let app = Rc::new(RefCell::new(App::new(
+            restored,
+            path,
+            dir,
+            std::env::current_exe()?,
+            false,
+            None::<Instance>,
+            Tray::new()?,
+        )));
+        ui::bind(&w, app.clone())?;
+        app.borrow_mut().initialize_view(&w);
+        w.show()?;
+        let timer = slint::Timer::default();
+        let weak = w.as_weak();
+        let mut stage = 0;
+        timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(180),
+            move || {
+                let w = weak.upgrade().unwrap();
+                match stage {
+                    0 => {
+                        assert!(w.get_dark());
+                        assert!(w.get_show_data());
+                        assert_eq!(w.window().size(), slint::PhysicalSize::new(1000, 500));
+                        w.invoke_expand(false);
+                    }
+                    1 => {
+                        assert_eq!(w.window().size(), slint::PhysicalSize::new(380, 480));
+                        w.invoke_expand(true);
+                    }
+                    2 => {
+                        assert_eq!(w.window().size(), slint::PhysicalSize::new(1000, 500));
+                        slint::quit_event_loop().unwrap();
+                    }
+                    _ => panic!("restart did not quit"),
+                }
+                stage += 1;
+            },
+        );
+        slint::run_event_loop_until_quit()?;
+        timer.stop();
+        app.borrow_mut().shutdown();
+        println!(
+            "PASS independent restart restored theme, groups, baud and both window sizes; no serial session opened"
+        );
+        return Ok(());
     }
     let mut settings = core::Settings::default();
     let mut g = core::Group::new(1, "红外口".into());
@@ -157,6 +239,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             3=> {fixture(&w);a.borrow_mut().request_close(&w);snapshot(w.window(),&dir.join("v2-close.bmp"),(300,334));w.invoke_close_choice(0,false);w.invoke_expand(true);w.invoke_theme_setting(1);}
             4=> {fixture(&w);snapshot(w.window(),&dir.join("v2-dark-expanded.bmp"),(780,334));}
             5=> {
+                w.invoke_theme_setting(0);w.invoke_expand(false);
+                a.borrow_mut().apply_detection(many_pairs(8),Ok(ports()),&w);
+            }
+            6=> {
+                fixture(&w);assert_eq!(w.get_left_width(),290.0);
+                assert_eq!(w.get_outputs().row_count(),8);assert!(w.get_output_scrollable());assert_eq!(w.get_output_page_rows(),2);
+                snapshot(w.window(),&dir.join("v3-collapsed-many.bmp"),(300,334));
+                wheel(&w,-40.0);assert_eq!(w.get_output_first_row(),2);
+                w.set_locked(false);
+                click(&w,w.get_output_x()+(w.get_output_width()-12.0)/2.0+6.0,w.get_output_y()+28.0);
+                assert!(w.get_outputs().iter().find(|p|p.name=="COM18").unwrap().checked);
+                w.invoke_toggle_output("COM18".into(),false);
+                snapshot(w.window(),&dir.join("v3-collapsed-many-bottom.bmp"),(300,334));
+                wheel(&w,40.0);assert_eq!(w.get_output_first_row(),0);
+                let x=w.get_output_x()+w.get_output_width()-4.0;let y=w.get_output_y();
+                let button=slint::platform::PointerEventButton::Left;
+                w.window().dispatch_event(slint::platform::WindowEvent::PointerMoved {position:slint::LogicalPosition::new(x,y+3.0)});
+                w.window().dispatch_event(slint::platform::WindowEvent::PointerPressed {position:slint::LogicalPosition::new(x,y+3.0),button});
+                w.window().dispatch_event(slint::platform::WindowEvent::PointerMoved {position:slint::LogicalPosition::new(x,y+37.0)});
+                w.window().dispatch_event(slint::platform::WindowEvent::PointerReleased {position:slint::LogicalPosition::new(x,y+37.0),button});
+                assert_eq!(w.get_output_first_row(),2);
+                w.window().set_size(slint::PhysicalSize::new(380,480));
+            }
+            7=> {
+                fixture(&w);assert_eq!(w.get_left_width(),370.0);assert!(!w.get_output_scrollable());
+                snapshot(w.window(),&dir.join("v3-collapsed-large.bmp"),(380,480));w.invoke_expand(true);
+            }
+            8=> {w.window().set_size(slint::PhysicalSize::new(1000,500));}
+            9=> {
+                fixture(&w);assert_eq!(w.get_left_width(),290.0);
+                snapshot(w.window(),&dir.join("v3-expanded-large.bmp"),(1000,500));w.invoke_expand(false);
+            }
+            10=> {assert_eq!(w.window().size(),slint::PhysicalSize::new(380,480));w.invoke_expand(true);}
+            11=> {
+                assert_eq!(w.window().size(),slint::PhysicalSize::new(1000,500));
+                let stored=core::parse_settings(&std::fs::read_to_string(&path).unwrap());
+                assert_eq!(stored.size_collapsed,core::WindowSize {width:380,height:480});
+                assert_eq!(stored.size_expanded,core::WindowSize {width:1000,height:500});
+                w.invoke_theme_setting(1);
+                println!("PASS resized layouts, complete-row wheel scrolling, last-row click, scrollbar drag and independent saved sizes");
+            }
+            12=> {
                 w.set_locked(false);w.set_desired_running(false);
                 w.invoke_toggle_run();assert!(w.get_state_reason().contains("界面预览"));w.invoke_manage(0);assert!(w.get_manage_message().contains("不会调用 setupc"));
                 w.invoke_edit(2,"4800".into());w.set_rename_text("已改名红外口".into());w.invoke_rename_choice(true);
@@ -178,7 +302,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("PASS callbacks, old port retained, text/HEX mode, 2000-line cap, pause/clear/resume and full status reason");
                 a.borrow_mut().request_close(&w);w.invoke_close_choice(1,true);assert!(!w.window().is_visible());
             }
-            6=> {
+            13=> {
                 assert!(!w.window().is_visible());w.show().unwrap();a.borrow_mut().request_close(&w);assert!(!w.window().is_visible());w.show().unwrap();w.invoke_close_setting(0);
                 a.borrow_mut().request_close(&w);assert!(w.get_close_dialog());w.invoke_close_choice(2,true);println!("PASS close cancel/tray/exit, remembered policies and hidden event loop");
             }

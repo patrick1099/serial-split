@@ -1,7 +1,7 @@
 use crate::{
     bridge::{self, DisplayEvent, Runtime, State},
     c0c::{self, Pair, Port},
-    core::{self, CloseAction, Group, Parity, Settings},
+    core::{self, CloseAction, Group, Parity, Settings, WindowSize},
     recorder::Recorder,
     tray::{self, Tray},
     winsys::{self, Instance},
@@ -175,15 +175,86 @@ slint::slint! {
     }
     export struct GroupRow { id:int, name:string, port:string, status:string }
     export struct OutputRow { name:string, label:string, suffix:string, checked:bool, available:bool }
+    component ClassicOutputs inherits Rectangle {
+        in property <[OutputRow]> outputs;
+        in property <bool> enabled: true;
+        in-out property <int> first-row: 0;
+        out property <int> page-rows: max(1, floor(root.height / 20px));
+        out property <int> total-rows: ceil(root.outputs.length / 2);
+        out property <int> maximum: max(0, root.total-rows - root.page-rows);
+        out property <bool> scrollable: root.maximum > 0;
+        callback toggled(string, bool);
+        changed maximum => {root.first-row = clamp(root.first-row, 0, root.maximum);}
+        public function scroll-rows(delta: int) {root.first-row = clamp(root.first-row + delta, 0, root.maximum);}
+        viewport := Rectangle {
+            x: 0px; y: 0px;
+            width: parent.width - (root.scrollable ? 12px : 0px);
+            height: root.page-rows * 20px; clip: true;
+            TouchArea {
+                width: parent.width; height: parent.height;
+            scroll-event(event) => {
+                if (root.scrollable && event.delta-y != 0px) {
+                    root.scroll-rows(event.delta-y < 0px ? max(1, round(-event.delta-y / 20px)) : -max(1, round(event.delta-y / 20px)));
+                    return accept;
+                }
+                reject
+            }
+            for output[i] in root.outputs: ClassicCheck {
+                x: mod(i, 2) * (parent.width / 2); y: (floor(i / 2) - root.first-row) * 20px;
+                width: parent.width / 2 - 4px;
+                visible: floor(i / 2) >= root.first-row && floor(i / 2) < root.first-row + root.page-rows;
+                text: output.name; suffix: output.suffix; checked: output.checked;
+                enabled: root.enabled && output.available;
+                toggled(value) => {root.toggled(output.name, value);}
+            }
+            }
+        }
+        if root.scrollable: Rectangle {
+            x: parent.width - 9px; y: 0px; width: 9px; height: root.page-rows * 20px;
+            background: Theme.face; border-width: 1px; border-color: Theme.group-edge;
+            thumb := Rectangle {
+                x: 1px; width: parent.width - 2px;
+                height: max(14px, parent.height * root.page-rows / root.total-rows);
+                y: root.first-row * (parent.height - self.height) / root.maximum;
+                background: Theme.button-bottom; border-width: 1px; border-color: Theme.edge;
+            }
+            TouchArea {
+                property <length> grab-y;
+                property <int> pressed-row;
+                width: parent.width; height: parent.height;
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                        if (self.mouse-y < thumb.y) {root.scroll-rows(-root.page-rows);}
+                        else if (self.mouse-y >= thumb.y + thumb.height) {root.scroll-rows(root.page-rows);}
+                        self.grab-y = self.mouse-y; self.pressed-row = root.first-row;
+                    }
+                }
+                moved => {
+                    if (self.pressed) {root.first-row = clamp(round(self.pressed-row + (self.mouse-y - self.grab-y) * root.maximum / max(1px, parent.height - thumb.height)), 0, root.maximum);}
+                }
+                scroll-event(event) => {
+                    if (event.delta-y != 0px) {root.scroll-rows(event.delta-y < 0px ? 1 : -1);return accept;}
+                    reject
+                }
+            }
+        }
+    }
     export struct PairRow { index:int, a:string, b:string, owner:string }
     export struct LogRow { stamp:string, text:string, kind:int }
     export component AppWindow inherits Window {
         title: "串口分路器"; default-font-family: "Microsoft YaHei"; default-font-size: 12px; background: Theme.face;
         preferred-width: root.show-data ? 780px : 300px; preferred-height: 334px;
-        min-width: root.show-data ? 780px : 300px; max-width: root.show-data ? 20000px : 300px;
-        min-height: 334px; max-height: root.show-data ? 20000px : 334px;
+        min-width: root.show-data ? 780px : 300px;
+        min-height: 334px;
         in property <image> app-icon; icon: root.app-icon;
         in property <[GroupRow]> groups; in property <[OutputRow]> outputs; in property <[PairRow]> pairs;
+        out property <length> left-width: left-panel.width;
+        out property <length> output-x: output-list.absolute-position.x;
+        out property <length> output-y: output-list.absolute-position.y;
+        out property <length> output-width: output-list.width;
+        out property <int> output-first-row: output-list.first-row;
+        out property <int> output-page-rows: output-list.page-rows;
+        out property <bool> output-scrollable: output-list.scrollable;
         in property <[LogRow]> logs; in property <[string]> ports; in property <[string]> bauds; in property <[string]> parities; in property <[string]> close-actions;
         in property <length> log-width: 1650px;
         in property <bool> has-group; in property <bool> locked; in property <bool> stopping; in property <bool> desired-running;
@@ -220,7 +291,7 @@ slint::slint! {
             }
             HorizontalLayout {
                 padding: 5px; spacing: root.show-data ? 5px : 0px;
-                VerticalLayout {width: 290px; spacing: 5px; alignment: start;
+                left-panel := VerticalLayout {min-width: 290px; max-width: root.show-data ? 290px : 20000px; horizontal-stretch: root.show-data ? 0 : 1; spacing: 5px;
                     GroupBox {title: "物理口"; height: 98px;
                         VerticalLayout {spacing: 4px;
                             HorizontalLayout {spacing: 6px;
@@ -229,33 +300,34 @@ slint::slint! {
                             }
                             HorizontalLayout {spacing: 6px;
                                 Text {text: "波特率"; width: 52px; color: Theme.text; vertical-alignment: center;}
-                                ClassicCombo {width: 74px; model: root.bauds; current-index <=> root.baud-index; enabled: root.has-group && !root.locked; selected(value) => {root.edit(2,value);} }
+                                ClassicCombo {width: (parent.width - 120px) / 2; model: root.bauds; current-index <=> root.baud-index; enabled: root.has-group && !root.locked; selected(value) => {root.edit(2,value);} }
                                 Text {text: "校验位"; width: 44px; color: Theme.text; vertical-alignment: center;}
                                 ClassicCombo {model: root.parities; current-index <=> root.parity-index; enabled: root.has-group && !root.locked; selected(value) => {root.edit(4,value);} }
                             }
                             HorizontalLayout {spacing: 6px;
                                 Text {text: "数据位"; width: 52px; color: Theme.text; vertical-alignment: center;}
-                                ClassicCombo {width: 74px; model: ["8","7"]; current-index <=> root.bits-index; enabled: root.has-group && !root.locked; selected(value) => {root.edit(3,value);} }
+                                ClassicCombo {width: (parent.width - 120px) / 2; model: ["8","7"]; current-index <=> root.bits-index; enabled: root.has-group && !root.locked; selected(value) => {root.edit(3,value);} }
                                 Text {text: "停止位"; width: 44px; color: Theme.text; vertical-alignment: center;}
                                 ClassicCombo {model: ["1","2"]; current-index <=> root.stop-index; enabled: root.has-group && !root.locked; selected(value) => {root.edit(5,value);} }
                             }
                         }
                     }
-                    GroupBox {title: "转发到虚拟口"; height: 72px;
+                    GroupBox {title: "转发到虚拟口"; min-height: 72px; preferred-height: 72px; vertical-stretch: 1;
                         if root.detection-text == "没检测到 com0com 虚拟口对": Text {text: root.detection-text; color: Theme.error; font-size: 12px; vertical-alignment: center;}
-                        if root.detection-text != "没检测到 com0com 虚拟口对": ScrollView {
-                            Rectangle {height: ceil(root.outputs.length / 2) * 20px;
-                                for output[i] in root.outputs: ClassicCheck {x: mod(i, 2) * (parent.width / 2); y: floor(i / 2) * 20px; width: parent.width / 2 - 4px; text: output.name; suffix: output.suffix; checked: output.checked; enabled: root.has-group && !root.locked && output.available; toggled(value) => {root.toggle-output(output.name,value);} }
-                            }
+                        output-list := ClassicOutputs {
+                            visible: root.detection-text != "没检测到 com0com 虚拟口对";
+                            outputs: root.outputs; enabled: root.has-group && !root.locked;
+                            toggled(name,value) => {root.toggle-output(name,value);}
                         }
                     }
                     HorizontalLayout {spacing: 5px;
-                        ClassicButton {width: 142.5px; text: root.stopping ? "停止中…" : root.desired-running ? "关闭串口" : "打开串口"; with-led: true; led: root.state-led; primary: true; enabled: root.has-group && !root.stopping; clicked => {root.toggle-run();} }
-                        ClassicButton {width: 142.5px; text: root.show-data ? "<< 收起" : "显示数据 >>"; clicked => {root.expand(!root.show-data);} }
+                        ClassicButton {horizontal-stretch: 1; text: root.stopping ? "停止中…" : root.desired-running ? "关闭串口" : "打开串口"; with-led: true; led: root.state-led; primary: true; enabled: root.has-group && !root.stopping; clicked => {root.toggle-run();} }
+                        ClassicButton {horizontal-stretch: 1; text: root.show-data ? "<< 收起" : "显示数据 >>"; clicked => {root.expand(!root.show-data);} }
                     }
                     ClassicCheck {text: "录制到数据库"; checked <=> root.recording; enabled: root.has-group && !root.locked; toggled(value) => {root.toggle-record(value);} }
                     if !root.has-group: Text {text: "点击 ＋ 新建分组"; color: Theme.dim;}
                     if root.global-error != "": Text {text: root.global-error; color: Theme.error; wrap: word-wrap;}
+                    Rectangle {min-height: 0px; preferred-height: 43px; max-height: 43px; vertical-stretch: 0;}
                 }
                 GroupBox {title: "数据"; visible: root.show-data; min-width: root.show-data ? 475px : 0px; max-width: root.show-data ? 20000px : 0px; horizontal-stretch: 1;
                     VerticalLayout {spacing: 4px;
@@ -409,6 +481,9 @@ pub struct App {
     settings_window: Option<SettingsWindow>,
     hex_mode: bool,
     running_since: HashMap<u32, Instant>,
+    window: Option<slint::Weak<AppWindow>>,
+    pending_size: Option<(WindowSize, Instant)>,
+    size_changed: Option<Instant>,
 }
 
 fn strings(items: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
@@ -467,12 +542,67 @@ impl App {
             settings_window: None,
             hex_mode: true,
             running_since: HashMap::new(),
+            window: None,
+            pending_size: None,
+            size_changed: None,
         }
     }
     fn save(&mut self) {
         if let Err(e) = save_settings(&self.settings_path, &self.settings) {
             self.global_error = format!("配置保存失败：{e}");
         }
+    }
+    fn view_size(&self) -> WindowSize {
+        if self.settings.show_data {
+            self.settings.size_expanded
+        } else {
+            self.settings.size_collapsed
+        }
+    }
+    fn remember_size(&mut self, w: &AppWindow) {
+        let physical = w.window().size();
+        let scale = w.window().scale_factor();
+        let size = WindowSize {
+            width: (physical.width as f32 / scale).round() as u32,
+            height: (physical.height as f32 / scale).round() as u32,
+        };
+        if let Some((target, since)) = self.pending_size {
+            // Native resize notifications may arrive after the view mode has changed.
+            if size != target && since.elapsed() < Duration::from_millis(500) {
+                return;
+            }
+            self.pending_size = None;
+        }
+        let minimum = if self.settings.show_data {
+            WindowSize::EXPANDED
+        } else {
+            WindowSize::COLLAPSED
+        };
+        if size.width < minimum.width || size.height < minimum.height {
+            return;
+        }
+        let saved = if self.settings.show_data {
+            &mut self.settings.size_expanded
+        } else {
+            &mut self.settings.size_collapsed
+        };
+        if *saved != size {
+            *saved = size;
+            self.size_changed = Some(Instant::now());
+        }
+    }
+    fn set_expanded(&mut self, w: &AppWindow, show: bool) {
+        if self.settings.show_data != show {
+            self.remember_size(w);
+            self.settings.show_data = show;
+            w.set_show_data(show);
+            let size = self.view_size();
+            self.pending_size = Some((size, Instant::now()));
+            resize_window(w, size);
+            self.size_changed = None;
+            self.save();
+        }
+        w.invoke_scroll_end();
     }
     fn history(&mut self, id: u32) -> History {
         self.histories
@@ -909,7 +1039,10 @@ impl App {
         w.set_dark(self.settings.theme == core::Theme::Dark);
         w.global::<Theme>().set_dark(w.get_dark());
         w.set_show_data(self.settings.show_data);
-        resize_window(w, self.settings.show_data);
+        self.window = Some(w.as_weak());
+        let size = self.view_size();
+        self.pending_size = Some((size, Instant::now()));
+        resize_window(w, size);
         w.set_close_actions(strings(CloseAction::ALL.map(|c| c.label().to_string())));
         w.set_close_index(
             CloseAction::ALL
@@ -930,6 +1063,14 @@ impl App {
         self.request_detect();
     }
     pub fn tick(&mut self, w: &AppWindow) {
+        self.remember_size(w);
+        if self
+            .size_changed
+            .is_some_and(|since| since.elapsed() >= Duration::from_millis(300))
+        {
+            self.size_changed = None;
+            self.save();
+        }
         let mut added = false;
         while let Ok(event) = self.display_rx.try_recv() {
             self.accept_display(event);
@@ -1047,6 +1188,9 @@ impl App {
         }
     }
     pub fn shutdown(&mut self) {
+        if let Some(w) = self.window.as_ref().and_then(slint::Weak::upgrade) {
+            self.remember_size(&w);
+        }
         for runtime in self.runtimes.values_mut() {
             runtime.shutdown();
         }
@@ -1092,11 +1236,7 @@ pub fn bind(w: &AppWindow, app: Rc<RefCell<App>>) -> Result<(), slint::PlatformE
     w.on_expand(move |show| {
         if let Some(w) = weak.upgrade() {
             let mut a = a.borrow_mut();
-            a.settings.show_data = show;
-            a.save();
-            w.set_show_data(show);
-            resize_window(&w, show);
-            w.invoke_scroll_end();
+            a.set_expanded(&w, show);
         }
     });
     let weak = w.as_weak();
@@ -1134,11 +1274,7 @@ pub fn bind(w: &AppWindow, app: Rc<RefCell<App>>) -> Result<(), slint::PlatformE
                     },
                 );
             }
-            a.settings.show_data = true;
-            a.save();
-            w.set_show_data(true);
-            resize_window(&w, true);
-            w.invoke_scroll_end();
+            a.set_expanded(&w, true);
         }
     });
     let weak = w.as_weak();
@@ -1533,12 +1669,12 @@ pub fn bind(w: &AppWindow, app: Rc<RefCell<App>>) -> Result<(), slint::PlatformE
     Ok(())
 }
 
-fn resize_window(w: &AppWindow, expanded: bool) {
+fn resize_window(w: &AppWindow, size: WindowSize) {
     let scale = w.window().scale_factor();
     // Physical sizing follows Slint's scale override, including deterministic preview DPI.
     w.window().set_size(slint::PhysicalSize::new(
-        ((if expanded { 780.0 } else { 300.0 }) * scale).round() as u32,
-        (334.0 * scale).round() as u32,
+        (size.width as f32 * scale).round() as u32,
+        (size.height as f32 * scale).round() as u32,
     ));
 }
 
