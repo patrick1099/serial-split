@@ -56,14 +56,123 @@ fn ports() -> Vec<Port> {
     }]
 }
 fn click(w: &AppWindow, x: f32, y: f32) {
+    pointer_click(w, x, y, slint::platform::PointerEventButton::Left);
+}
+fn pointer_click(w: &AppWindow, x: f32, y: f32, button: slint::platform::PointerEventButton) {
     let position = slint::LogicalPosition::new(x, y);
-    let button = slint::platform::PointerEventButton::Left;
     w.window()
         .dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
     w.window()
         .dispatch_event(slint::platform::WindowEvent::PointerPressed { position, button });
     w.window()
         .dispatch_event(slint::platform::WindowEvent::PointerReleased { position, button });
+}
+fn key(w: &AppWindow, key: slint::platform::Key) {
+    let text: slint::SharedString = key.into();
+    w.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: text.clone() });
+    w.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyReleased { text });
+}
+fn replace_name(w: &AppWindow, text: &str) {
+    w.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+            text: slint::platform::Key::Control.into(),
+        });
+    w.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "a".into() });
+    w.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: "a".into() });
+    w.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+            text: slint::platform::Key::Control.into(),
+        });
+    w.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: text.into() });
+    w.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: text.into() });
+    assert_eq!(w.get_rename_text(), text);
+}
+fn v4_smoke(w: &AppWindow, app: Rc<RefCell<App>>, dir: &Path) {
+    let timer = slint::Timer::default();
+    let weak = w.as_weak();
+    let dir = dir.to_path_buf();
+    let mut stage = 0;
+    timer.start(slint::TimerMode::Repeated,Duration::from_millis(180),move || {
+        let w=weak.upgrade().unwrap();app.borrow_mut().tick(&w);
+        match stage {
+            0=>pointer_click(&w,100.0,14.0,slint::platform::PointerEventButton::Right),
+            1=> {
+                assert_eq!(w.get_selected_id(),2);
+                w.window().dispatch_event(slint::platform::WindowEvent::PointerMoved {position:slint::LogicalPosition::new(w.get_menu_x()+12.0,w.get_menu_y()+11.0)});
+                snapshot(w.window(),&dir.join("v4-tab-menu.bmp"),(300,334));
+                click(&w,w.get_menu_x()+12.0,w.get_menu_y()+11.0);
+                assert!(w.get_rename_dialog());
+            }
+            2=> {
+                snapshot(w.window(),&dir.join("v4-rename.bmp"),(300,334));
+                assert!(w.get_rename_valid());
+                replace_name(&w,"   ");assert!(!w.get_rename_valid());
+                key(&w,slint::platform::Key::Return);assert!(w.get_rename_dialog());
+                replace_name(&w,"维护口");key(&w,slint::platform::Key::Return);
+                assert!(!w.get_rename_dialog());assert_eq!(w.get_groups().row_data(1).unwrap().name,"维护口");
+                w.invoke_open_rename();
+            }
+            3=> {
+                replace_name(&w,"放弃改名");key(&w,slint::platform::Key::Escape);
+                assert!(!w.get_rename_dialog());assert_eq!(w.get_group_name(),"维护口");
+                w.invoke_open_tab_menu(2,100.0,27.0);
+                w.set_locked(true);assert!(!w.get_menu_can_delete());w.invoke_choose_tab_action(1);assert!(!w.get_delete_dialog());
+                w.set_locked(false);w.set_stopping(true);assert!(!w.get_menu_can_delete());w.invoke_choose_tab_action(1);assert!(!w.get_delete_dialog());
+                w.set_stopping(false);assert!(w.get_menu_can_delete());
+            }
+            4=> {
+                click(&w,w.get_menu_x()+12.0,w.get_menu_y()+33.0);
+                assert!(w.get_delete_dialog());assert_eq!(w.get_delete_id(),2);
+            }
+            5=> {
+                snapshot(w.window(),&dir.join("v4-delete-confirm.bmp"),(300,334));
+                key(&w,slint::platform::Key::Escape);assert!(!w.get_delete_dialog());
+                assert_eq!(w.get_groups().row_count(),2);w.invoke_delete_group();
+            }
+            6=> {
+                w.invoke_delete_choice(false);assert_eq!(w.get_groups().row_count(),2);
+                w.invoke_delete_group();w.invoke_select_group(1);w.invoke_delete_choice(true);
+                assert_eq!(w.get_groups().row_count(),1);assert_eq!(w.get_groups().row_data(0).unwrap().id,1);
+                app.borrow_mut().apply_detection(many_pairs(8),Ok(ports()),&w);
+                w.window().set_size(slint::PhysicalSize::new(380,480));
+            }
+            7=> {
+                assert!((w.get_status_top()-w.get_recording_bottom()-5.0).abs()<1.0);
+                snapshot(w.window(),&dir.join("v4-collapsed-large.bmp"),(380,480));
+                w.invoke_expand(true);
+            }
+            8=>w.window().set_size(slint::PhysicalSize::new(1000,500)),
+            9=> {
+                assert!((w.get_status_top()-w.get_recording_bottom()-5.0).abs()<1.0);
+                w.invoke_expand(false);w.invoke_delete_group();
+            }
+            10=> {
+                assert!(w.get_delete_dialog());w.invoke_delete_choice(true);
+                assert_eq!(w.get_groups().row_count(),0);assert!(!w.get_has_group());
+                assert_eq!(w.get_port_index(),0);assert_eq!(w.get_group_name(),"");
+                assert_eq!(w.get_logs().row_count(),0);w.window().set_size(slint::PhysicalSize::new(300,334));
+            }
+            11=> {
+                snapshot(w.window(),&dir.join("v4-empty.bmp"),(300,334));
+                click(&w,17.0,14.0);assert!(w.get_has_group());assert_eq!(w.get_groups().row_count(),1);
+                assert_eq!(w.get_bauds().row_data(w.get_baud_index() as usize).unwrap(),"2400");
+                w.invoke_delete_group();w.invoke_delete_choice(true);
+                let stored=core::parse_settings(&std::fs::read_to_string(dir.join("v4-settings.ini")).unwrap());assert!(stored.groups.is_empty());
+                println!("PASS right-click target, custom menu, blank-name guard, Enter/Esc, disabled delete, confirmation/cancel, captured deletion target, stretched layouts and empty-group recovery");
+                slint::quit_event_loop().unwrap();
+            }
+            _=>panic!("v4 did not quit"),
+        }
+        stage+=1;
+    });
+    slint::run_event_loop_until_quit().unwrap();
+    timer.stop();
 }
 fn wheel(w: &AppWindow, delta: f32) {
     w.window()
@@ -104,7 +213,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let dir = std::env::current_dir()?.join("target/ui-smoke");
     std::fs::create_dir_all(&dir)?;
-    let path = dir.join("v2-settings.ini");
+    let v4 = std::env::args().any(|arg| arg == "--v4");
+    let path = dir.join(if v4 {
+        "v4-settings.ini"
+    } else {
+        "v2-settings.ini"
+    });
     let capture_path = dir.join("capture.sqlite3");
     if std::env::args().any(|arg| arg == "--resume") {
         let restored = core::parse_settings(&std::fs::read_to_string(&path)?);
@@ -200,6 +314,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.borrow_mut().initialize_view(&w);
     app.borrow_mut().apply_detection(pairs(), Ok(ports()), &w);
     w.show()?;
+    if v4 {
+        v4_smoke(&w, app.clone(), &dir);
+        app.borrow_mut().shutdown();
+        let c = rusqlite::Connection::open(capture_path)?;
+        let count: i64 = c.query_row("SELECT count(*) FROM sessions", [], |r| r.get(0))?;
+        assert_eq!(count, 0);
+        println!("PASS v4 shutdown; no serial session opened");
+        return Ok(());
+    }
     let timer = slint::Timer::default();
     let weak = w.as_weak();
     let a = app.clone();
@@ -240,25 +363,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             4=> {fixture(&w);snapshot(w.window(),&dir.join("v2-dark-expanded.bmp"),(780,334));}
             5=> {
                 w.invoke_theme_setting(0);w.invoke_expand(false);
-                a.borrow_mut().apply_detection(many_pairs(8),Ok(ports()),&w);
+                a.borrow_mut().apply_detection(many_pairs(12),Ok(ports()),&w);
             }
             6=> {
                 fixture(&w);assert_eq!(w.get_left_width(),290.0);
-                assert_eq!(w.get_outputs().row_count(),8);assert!(w.get_output_scrollable());assert_eq!(w.get_output_page_rows(),2);
+                assert_eq!(w.get_outputs().row_count(),12);assert!(w.get_output_scrollable());assert_eq!(w.get_output_page_rows(),4);
                 snapshot(w.window(),&dir.join("v3-collapsed-many.bmp"),(300,334));
                 wheel(&w,-40.0);assert_eq!(w.get_output_first_row(),2);
                 w.set_locked(false);
-                click(&w,w.get_output_x()+(w.get_output_width()-12.0)/2.0+6.0,w.get_output_y()+28.0);
-                assert!(w.get_outputs().iter().find(|p|p.name=="COM18").unwrap().checked);
-                w.invoke_toggle_output("COM18".into(),false);
+                click(&w,w.get_output_x()+(w.get_output_width()-12.0)/2.0+6.0,w.get_output_y()+68.0);
+                assert!(w.get_outputs().iter().find(|p|p.name=="COM22").unwrap().checked);
+                w.invoke_toggle_output("COM22".into(),false);
                 snapshot(w.window(),&dir.join("v3-collapsed-many-bottom.bmp"),(300,334));
                 wheel(&w,40.0);assert_eq!(w.get_output_first_row(),0);
                 let x=w.get_output_x()+w.get_output_width()-4.0;let y=w.get_output_y();
                 let button=slint::platform::PointerEventButton::Left;
                 w.window().dispatch_event(slint::platform::WindowEvent::PointerMoved {position:slint::LogicalPosition::new(x,y+3.0)});
                 w.window().dispatch_event(slint::platform::WindowEvent::PointerPressed {position:slint::LogicalPosition::new(x,y+3.0),button});
-                w.window().dispatch_event(slint::platform::WindowEvent::PointerMoved {position:slint::LogicalPosition::new(x,y+37.0)});
-                w.window().dispatch_event(slint::platform::WindowEvent::PointerReleased {position:slint::LogicalPosition::new(x,y+37.0),button});
+                w.window().dispatch_event(slint::platform::WindowEvent::PointerMoved {position:slint::LogicalPosition::new(x,y+77.0)});
+                w.window().dispatch_event(slint::platform::WindowEvent::PointerReleased {position:slint::LogicalPosition::new(x,y+77.0),button});
                 assert_eq!(w.get_output_first_row(),2);
                 w.window().set_size(slint::PhysicalSize::new(380,480));
             }
@@ -287,7 +410,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 w.set_rename_text("不保存".into());w.invoke_rename_choice(false);
                 let stored=core::parse_settings(&std::fs::read_to_string(&path).unwrap());
                 assert_eq!(stored.theme,core::Theme::Dark);assert!(stored.show_data);assert_eq!(stored.groups[0].name,"已改名红外口");assert_eq!(stored.groups[0].baud,4800);assert!(stored.groups.iter().all(|g|!g.running));
-                w.invoke_new_group();assert_eq!(w.get_groups().row_count(),3);w.invoke_delete_group();assert_eq!(w.get_groups().row_count(),2);w.invoke_select_group(1);
+                w.invoke_new_group();assert_eq!(w.get_groups().row_count(),3);w.invoke_delete_group();assert!(w.get_delete_dialog());w.invoke_delete_choice(true);assert_eq!(w.get_groups().row_count(),2);w.invoke_select_group(1);
                 w.set_hex(false);w.invoke_display_mode(false);let previous=w.get_logs().row_data(1).unwrap().text;
                 a.borrow_mut().accept_display(event(core::Direction::Tx,Some("COM12"),"中文\r\n".as_bytes(),0));
                 assert_eq!(w.get_logs().row_data(w.get_logs().row_count()-1).unwrap().text,"TX←COM12 中文..");assert_eq!(w.get_logs().row_data(1).unwrap().text,previous);

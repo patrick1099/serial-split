@@ -88,6 +88,7 @@ slint::slint! {
             Text {text: root.text; color: root.enabled ? Theme.text : Theme.disabled; font-size: 12px; vertical-alignment: center;}
         }
         focus := FocusScope { enabled: root.enabled; key-pressed(e) => { if (e.text == Key.Return || e.text == " ") {root.clicked(); return accept;} return reject; } }
+        forward-focus: focus;
         touch := TouchArea { enabled: root.enabled; clicked => {focus.focus();root.clicked();} }
     }
     component ClassicCheck inherits Rectangle {
@@ -112,8 +113,9 @@ slint::slint! {
         in-out property <string> text;
         in property <bool> enabled: true;
         callback edited(string);
+        callback accepted;
         height: 20px; border-width: 1px; border-color: Theme.control-edge; background: Theme.field;
-        input := TextInput {x: 4px; width: parent.width - 8px; text <=> root.text; enabled: root.enabled; single-line: true; font-size: 12px; color: root.enabled ? Theme.text : Theme.disabled; selection-background-color: Theme.selection; selection-foreground-color: Theme.selected-text; vertical-alignment: center; edited => {root.edited(self.text);} }
+        input := TextInput {x: 4px; width: parent.width - 8px; text <=> root.text; enabled: root.enabled; single-line: true; font-size: 12px; color: root.enabled ? Theme.text : Theme.disabled; selection-background-color: Theme.selection; selection-foreground-color: Theme.selected-text; vertical-alignment: center; edited => {root.edited(self.text);} accepted => {root.accepted();} }
         forward-focus: input;
     }
     component ClassicCombo inherits Rectangle {
@@ -153,12 +155,24 @@ slint::slint! {
         in property <int> led: -1;
         callback clicked;
         callback double-clicked;
+        callback context-menu(length,length);
         width: label.preferred-width + (root.led >= 0 ? 32px : 18px); height: 23px;
         background: root.selected ? Theme.face : Theme.tab; border-width: 1px; border-color: Theme.edge;
         if root.led >= 0: Led {x: 8px; y: 8px; kind: root.led;}
         label := Text {x: root.led >= 0 ? 21px : 8px; text: root.text; color: Theme.text; font-size: 12px; vertical-alignment: center;}
         if root.selected: Rectangle {x: 1px; y: parent.height - 1px; width: parent.width - 2px; height: 1px; background: Theme.face;}
-        TouchArea {clicked => {root.clicked();} double-clicked => {root.double-clicked();} }
+        TouchArea {clicked => {root.clicked();} double-clicked => {root.double-clicked();}
+            pointer-event(event) => {if (event.kind == PointerEventKind.up && event.button == PointerEventButton.right) {root.context-menu(self.mouse-x,self.mouse-y);} }
+        }
+    }
+    component ClassicMenuItem inherits Rectangle {
+        in property <string> text;
+        in property <bool> enabled: true;
+        callback clicked;
+        height: 22px;
+        background: root.enabled && touch.has-hover ? Theme.selection : Theme.field;
+        Text {x: 8px; text: root.text; vertical-alignment: center; color: !root.enabled ? Theme.disabled : touch.has-hover ? Theme.selected-text : Theme.text;}
+        touch := TouchArea {enabled: root.enabled; clicked => {root.clicked();} }
     }
     component StatusCell inherits Rectangle {
         in property <string> text;
@@ -255,6 +269,8 @@ slint::slint! {
         out property <int> output-first-row: output-list.first-row;
         out property <int> output-page-rows: output-list.page-rows;
         out property <bool> output-scrollable: output-list.scrollable;
+        out property <length> recording-bottom: record-option.absolute-position.y + record-option.height;
+        out property <length> status-top: status-bar.y;
         in property <[LogRow]> logs; in property <[string]> ports; in property <[string]> bauds; in property <[string]> parities; in property <[string]> close-actions;
         in property <length> log-width: 1650px;
         in property <bool> has-group; in property <bool> locked; in property <bool> stopping; in property <bool> desired-running;
@@ -269,13 +285,36 @@ slint::slint! {
         in-out property <bool> autostart: false; in-out property <int> close-index: 0; in-out property <int> retention: 30;
         in-out property <bool> close-dialog: false; in-out property <bool> remember-close: false;
         in-out property <bool> rename-dialog: false; in-out property <string> rename-text;
+        in property <bool> rename-valid;
+        in-out property <bool> delete-dialog: false; in property <string> delete-name; in property <int> delete-id;
+        in-out property <length> menu-x; in-out property <length> menu-y;
+        out property <bool> menu-can-delete: root.has-group && !root.locked && !root.stopping;
         in-out property <bool> manage-dialog: false; in-out property <int> pair-index: -1; in-out property <string> new-port;
         in property <string> manage-message; in property <bool> manage-busy;
         callback select-group(int); callback new-group(); callback delete-group(); callback rename-choice(bool);
+        callback delete-choice(bool); callback validate-name(string);
+        changed rename-text => {root.validate-name(root.rename-text);}
         callback edit(int,string); callback toggle-output(string,bool); callback toggle-record(bool); callback refresh-ports(); callback toggle-run();
         callback pause(bool); callback clear-log(); callback display-mode(bool); callback expand(bool); callback theme-setting(int);
         callback startup(bool); callback close-setting(int); callback retention-setting(int); callback open-data(); callback open-manager(); callback manage(int); callback close-choice(int,bool); callback explain-state();
         public function scroll-end() { if (root.auto-scroll && !root.paused) {log-view.content-y = min(0px, log-view.height - log-view.content-height);} }
+        public function open-rename() {root.rename-text = root.group-name;root.validate-name(root.rename-text);root.rename-dialog = true;}
+        public function open-tab-menu(id: int, x: length, y: length) {
+            root.select-group(id);root.menu-x = clamp(x,0px,root.width - 128px);root.menu-y = clamp(y,0px,root.height - 46px);tab-menu.show();
+        }
+        public function choose-tab-action(action: int) {
+            if action == 0 {tab-menu.close();root.open-rename();}
+            else if (action == 1 && root.menu-can-delete) {tab-menu.close();root.delete-group();}
+        }
+        tab-menu := PopupWindow {x: root.menu-x; y: root.menu-y; width: 128px; height: 46px; close-policy: close-on-click-outside;
+            Rectangle {background: Theme.field; border-width: 1px; border-color: Theme.edge;
+                VerticalLayout {padding: 1px; spacing: 0px;
+                    ClassicMenuItem {text: "重命名…"; clicked => {root.choose-tab-action(0);} }
+                    ClassicMenuItem {text: "删除分组"; enabled: root.menu-can-delete; clicked => {root.choose-tab-action(1);} }
+                }
+                menu-focus := FocusScope {init => {self.focus();} key-pressed(e) => {if e.text == Key.Escape {tab-menu.close();return accept;}return reject;} }
+            }
+        }
         VerticalLayout {
             spacing: 0px;
             Rectangle {height: 27px;
@@ -283,7 +322,8 @@ slint::slint! {
                 ScrollView {x: 4px; y: 4px; width: parent.width - 8px; height: 23px;
                     HorizontalLayout {spacing: 0px; alignment: start;
                         for group in root.groups: TabItem {text: group.name; selected: group.id == root.selected-id; led: group.status == "运行" ? 1 : group.status == "等待" || group.status == "错误" ? 2 : 0;
-                            clicked => {root.select-group(group.id);} double-clicked => {root.select-group(group.id);root.rename-text = root.group-name;root.rename-dialog = true;}
+                            clicked => {root.select-group(group.id);} double-clicked => {root.select-group(group.id);root.open-rename();}
+                            context-menu(x,y) => {root.open-tab-menu(group.id,self.absolute-position.x + x,self.absolute-position.y + y);}
                         }
                         TabItem {text: "＋"; clicked => {root.new-group();} }
                     }
@@ -324,10 +364,9 @@ slint::slint! {
                         ClassicButton {horizontal-stretch: 1; text: root.stopping ? "停止中…" : root.desired-running ? "关闭串口" : "打开串口"; with-led: true; led: root.state-led; primary: true; enabled: root.has-group && !root.stopping; clicked => {root.toggle-run();} }
                         ClassicButton {horizontal-stretch: 1; text: root.show-data ? "<< 收起" : "显示数据 >>"; clicked => {root.expand(!root.show-data);} }
                     }
-                    ClassicCheck {text: "录制到数据库"; checked <=> root.recording; enabled: root.has-group && !root.locked; toggled(value) => {root.toggle-record(value);} }
+                    record-option := ClassicCheck {text: "录制到数据库"; checked <=> root.recording; enabled: root.has-group && !root.locked; toggled(value) => {root.toggle-record(value);} }
                     if !root.has-group: Text {text: "点击 ＋ 新建分组"; color: Theme.dim;}
                     if root.global-error != "": Text {text: root.global-error; color: Theme.error; wrap: word-wrap;}
-                    Rectangle {min-height: 0px; preferred-height: 43px; max-height: 43px; vertical-stretch: 0;}
                 }
                 GroupBox {title: "数据"; visible: root.show-data; min-width: root.show-data ? 475px : 0px; max-width: root.show-data ? 20000px : 0px; horizontal-stretch: 1;
                     VerticalLayout {spacing: 4px;
@@ -349,7 +388,7 @@ slint::slint! {
                     }
                 }
             }
-            Rectangle {height: 22px;
+            status-bar := Rectangle {height: 22px;
                 HorizontalLayout {padding: 2px; spacing: 2px;
                     StatusCell {text: root.show-data && root.running-time != "" ? root.state-text + " " + root.running-time : root.state-text; error: root.state-error; clicked => {root.explain-state();} }
                     StatusCell {text: "RX:" + root.rx-count;}
@@ -359,15 +398,30 @@ slint::slint! {
                 }
             }
         }
-        if root.rename-dialog: Rectangle {background: Theme.overlay; TouchArea {}
+        if root.rename-dialog: FocusScope {
+            key-pressed(e) => {if e.text == Key.Escape {root.rename-choice(false);return accept;}return reject;}
+            Rectangle {background: Theme.overlay; TouchArea {}}
             Rectangle {width: 282px; height: 124px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; background: Theme.face; border-width: 1px; border-color: Theme.control-edge;
                 VerticalLayout {padding: 10px; spacing: 8px;
                     Text {text: "分组名称"; color: Theme.text;}
-                    ClassicInput {text <=> root.rename-text; enabled: !root.locked;}
-                    HorizontalLayout {spacing: 5px;
-                        ClassicButton {text: "删除分组"; enabled: !root.locked; clicked => {root.rename-dialog = false;root.delete-group();} }
-                        ClassicButton {text: "确定"; primary: true; clicked => {root.rename-choice(true);} }
-                        ClassicButton {text: "取消"; clicked => {root.rename-choice(false);} }
+                    rename-input := ClassicInput {text <=> root.rename-text; init => {self.focus();} edited(value) => {root.validate-name(value);} accepted => {if root.rename-valid {root.rename-choice(true);} } }
+                    HorizontalLayout {spacing: 5px; alignment: end;
+                        ClassicButton {width: 60px; text: "确定"; primary: true; enabled: root.rename-valid; clicked => {root.rename-choice(true);} }
+                        ClassicButton {width: 60px; text: "取消"; clicked => {root.rename-choice(false);} }
+                    }
+                }
+            }
+        }
+        if root.delete-dialog: FocusScope {
+            init => {cancel-delete.focus();}
+            key-pressed(e) => {if e.text == Key.Escape {root.delete-choice(false);return accept;}return reject;}
+            Rectangle {background: Theme.overlay; TouchArea {}}
+            Rectangle {width: 282px; height: 105px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; background: Theme.face; border-width: 1px; border-color: Theme.control-edge;
+                VerticalLayout {padding: 10px; spacing: 10px;
+                    Text {text: "确定删除分组“" + root.delete-name + "”？"; color: Theme.text; wrap: word-wrap;}
+                    HorizontalLayout {spacing: 5px; alignment: end;
+                        ClassicButton {width: 60px; text: "删除"; enabled: root.menu-can-delete; clicked => {root.delete-choice(true);} }
+                        cancel-delete := ClassicButton {width: 60px; text: "取消"; clicked => {root.delete-choice(false);} }
                     }
                 }
             }
@@ -755,6 +809,15 @@ impl App {
             );
             w.set_stop_index(if g.stop_bits == 2 { 1 } else { 0 });
             w.set_recording(g.record);
+        } else {
+            w.set_group_name("".into());
+            w.set_port_index(0);
+            w.set_bauds(strings(core::BAUDS.iter().map(ToString::to_string)));
+            w.set_baud_index(core::BAUDS.iter().position(|b| *b == 2400).unwrap() as i32);
+            w.set_bits_index(0);
+            w.set_parity_index(0);
+            w.set_stop_index(0);
+            w.set_recording(true);
         }
         if self.displayed_group != self.selected {
             self.bind_history(w);
@@ -1278,13 +1341,20 @@ pub fn bind(w: &AppWindow, app: Rc<RefCell<App>>) -> Result<(), slint::PlatformE
         }
     });
     let weak = w.as_weak();
+    w.on_validate_name(move |name| {
+        if let Some(w) = weak.upgrade() {
+            w.set_rename_valid(!name.trim().is_empty());
+        }
+    });
+    let weak = w.as_weak();
     w.on_rename_choice(move |save| {
         if let Some(w) = weak.upgrade() {
-            if save && !w.get_locked() {
+            if save {
                 let name = w.get_rename_text();
-                if !name.trim().is_empty() {
-                    w.invoke_edit(0, name);
+                if name.trim().is_empty() {
+                    return;
                 }
+                w.invoke_edit(0, name.trim().into());
             }
             w.set_rename_dialog(false);
         }
@@ -1316,8 +1386,26 @@ pub fn bind(w: &AppWindow, app: Rc<RefCell<App>>) -> Result<(), slint::PlatformE
     let a = app.clone();
     w.on_delete_group(move || {
         if let Some(w) = weak.upgrade() {
-            let mut a = a.borrow_mut();
+            let a = a.borrow();
             if let Some(id) = a.selected {
+                if a.runtimes.contains_key(&id) || !w.get_menu_can_delete() {
+                    return;
+                }
+                if let Some(g) = a.settings.group(id) {
+                    w.set_delete_id(id as i32);
+                    w.set_delete_name(g.name.clone().into());
+                    w.set_delete_dialog(true);
+                }
+            }
+        }
+    });
+    let weak = w.as_weak();
+    let a = app.clone();
+    w.on_delete_choice(move |confirm| {
+        if let Some(w) = weak.upgrade() {
+            if confirm && w.get_delete_dialog() {
+                let mut a = a.borrow_mut();
+                let id = w.get_delete_id() as u32;
                 if a.runtimes.contains_key(&id) {
                     return;
                 }
@@ -1327,10 +1415,14 @@ pub fn bind(w: &AppWindow, app: Rc<RefCell<App>>) -> Result<(), slint::PlatformE
                 a.stopped_stats.remove(&id);
                 a.errors.remove(&id);
                 a.last_states.remove(&id);
-                a.selected = a.settings.groups.first().map(|g| g.id);
+                a.running_since.remove(&id);
+                if a.selected == Some(id) {
+                    a.selected = a.settings.groups.first().map(|g| g.id);
+                }
                 a.save();
                 a.editor(&w);
             }
+            w.set_delete_dialog(false);
         }
     });
     let weak = w.as_weak();
@@ -1341,7 +1433,7 @@ pub fn bind(w: &AppWindow, app: Rc<RefCell<App>>) -> Result<(), slint::PlatformE
             let Some(id) = a.selected else {
                 return;
             };
-            if a.runtimes.contains_key(&id) {
+            if field != 0 && a.runtimes.contains_key(&id) {
                 return;
             }
             let value = value.to_string();
@@ -1354,7 +1446,10 @@ pub fn bind(w: &AppWindow, app: Rc<RefCell<App>>) -> Result<(), slint::PlatformE
                 return;
             };
             match field {
-                0 => g.name = value,
+                0 => {
+                    g.name = value;
+                    w.set_group_name(g.name.clone().into());
+                }
                 1 => {
                     if let Some(p) = port {
                         g.port = p;
