@@ -1,5 +1,9 @@
 use crate::{core, winsys::wide};
-use std::{collections::BTreeMap, path::PathBuf, ptr};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    ptr,
+};
 use windows_sys::Win32::{
     Foundation::{CloseHandle, ERROR_CANCELLED},
     System::Threading::{GetExitCodeProcess, INFINITE, WaitForSingleObject},
@@ -27,7 +31,7 @@ impl HiddenMode {
     fn enabled(&self) -> bool {
         match self {
             Self::Text(value) => value.eq_ignore_ascii_case("yes"),
-            Self::Dword(value) => *value == 1,
+            Self::Dword(value) => *value != 0,
         }
     }
 }
@@ -232,16 +236,55 @@ fn create_args(name: &str) -> Result<String, String> {
         core::normalize_port_name(name)?
     ))
 }
-fn hide_script(indices: &[u32]) -> String {
-    let mut indices = indices.to_vec();
-    indices.sort_unstable();
-    indices.dedup();
-    let mut script = "@echo off\r\nset \"serial_split_failed=0\"\r\n".to_string();
-    for index in indices {
-        script.push_str(&format!("\"setupc.exe\" --silent change CNCB{index} HiddenMode=yes\r\nif errorlevel 1 set \"serial_split_failed=1\"\r\n"));
+fn setup_commands(action: &Manage) -> Result<Vec<String>, String> {
+    Ok(match action {
+        Manage::Create(name) => vec![create_args(name)?],
+        Manage::Delete(index) => vec![format!("--silent remove {index}")],
+        Manage::HideBackends(indices) => {
+            let mut indices = indices.clone();
+            indices.sort_unstable();
+            indices.dedup();
+            indices
+                .into_iter()
+                .map(|index| format!("--silent change CNCB{index} HiddenMode=yes"))
+                .collect()
+        }
+    })
+}
+fn batch_path(path: &Path) -> String {
+    path.to_string_lossy().replace('%', "%%")
+}
+fn setup_script(setup: &Path, commands: &[String], log: &Path) -> Result<String, String> {
+    if !setup.is_absolute() || !log.is_absolute() {
+        return Err("setupc 和日志路径必须是绝对路径".into());
+    }
+    let directory = batch_path(setup.parent().ok_or("setupc 目录无效")?);
+    let setup = batch_path(setup);
+    let log = batch_path(log);
+    let mut script = format!(
+        "cd /d \"{directory}\" >> \"{log}\" 2>&1\r\n@if errorlevel 1 (\r\n@echo [%date% %time%] cd /d \"{directory}\" failed >> \"{log}\"\r\n@exit /b 1\r\n)\r\n@echo off\r\nsetlocal EnableExtensions DisableDelayedExpansion\r\nset \"serial_split_failed=0\"\r\n"
+    );
+    for command in commands {
+        script.push_str(&format!(
+            "echo [%date% %time%] \"{setup}\" {command} >> \"{log}\"\r\n\"{setup}\" {command} >> \"{log}\" 2>&1\r\nif errorlevel 1 set \"serial_split_failed=1\"\r\n"
+        ));
     }
     script.push_str("exit /b %serial_split_failed%\r\n");
-    script
+    Ok(script)
+}
+fn script_args(script: &Path) -> String {
+    // The script is UTF-8, including any non-ASCII setupc or user TEMP paths.
+    format!(
+        "/d /s /v:off /c \"chcp 65001 >nul && \"{}\"\"",
+        script.display()
+    )
+}
+fn setup_error(error: String, log: &Path) -> String {
+    if error == "已取消" {
+        error
+    } else {
+        format!("{error}\n日志：{}", log.display())
+    }
 }
 struct TemporaryScript(PathBuf);
 impl Drop for TemporaryScript {
@@ -251,41 +294,41 @@ impl Drop for TemporaryScript {
 }
 pub fn manage(action: Manage) -> Result<(), String> {
     let setup = setup_path().ok_or("没装 com0com")?;
-    let args = match action {
-        Manage::Create(name) => create_args(&name)?,
-        Manage::Delete(index) => format!("--silent remove {index}"),
-        Manage::HideBackends(indices) => {
-            if indices.is_empty() {
-                return Ok(());
-            }
-            // ASCII script; setupc resolves in the explicitly supplied working directory.
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| e.to_string())?
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "serial-split-hide-{}-{stamp}.cmd",
-                std::process::id()
-            ));
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-                .map_err(|e| format!("无法创建隐藏命令：{e}"))?;
-            let script = TemporaryScript(path);
-            std::io::Write::write_all(&mut file, hide_script(&indices).as_bytes())
-                .map_err(|e| format!("无法写入隐藏命令：{e}"))?;
-            drop(file);
-            let cmd = PathBuf::from(std::env::var_os("SystemRoot").ok_or("未找到 SystemRoot")?)
-                .join("System32/cmd.exe");
-            return elevated(
-                &cmd,
-                &format!("/d /s /c \"\"{}\"\"", script.0.display()),
-                setup.parent().unwrap(),
-            );
-        }
-    };
-    elevated(&setup, &args, setup.parent().unwrap())
+    let commands = setup_commands(&action)?;
+    if commands.is_empty() {
+        return Ok(());
+    }
+    run_setup(&setup, &commands)
+}
+fn run_setup(setup: &Path, commands: &[String]) -> Result<(), String> {
+    let temp = std::env::temp_dir();
+    let log = temp.join("serial-split-setupc.log");
+    let result = (|| {
+        let setup = std::path::absolute(setup).map_err(|e| e.to_string())?;
+        let text = setup_script(&setup, commands, &log)?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos();
+        let path = temp.join(format!(
+            "serial-split-setupc-{}-{stamp}.cmd",
+            std::process::id()
+        ));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| format!("无法创建 setupc 命令：{e}"))?;
+        let script = TemporaryScript(path);
+        let written = std::io::Write::write_all(&mut file, text.as_bytes());
+        drop(file);
+        written.map_err(|e| format!("无法写入 setupc 命令：{e}"))?;
+        let cmd = PathBuf::from(std::env::var_os("SystemRoot").ok_or("未找到 SystemRoot")?)
+            .join("System32")
+            .join("cmd.exe");
+        elevated(&cmd, &script_args(&script.0), setup.parent().unwrap())
+    })();
+    result.map_err(|error| setup_error(error, &log))
 }
 fn elevated(file: &std::path::Path, args: &str, directory: &std::path::Path) -> Result<(), String> {
     let (verb, file, params, dir) = (wide("runas"), wide(file), wide(args), wide(directory));
@@ -443,6 +486,8 @@ mod tests {
             HiddenMode::Text("yes".into()),
             HiddenMode::Text("YES".into()),
             HiddenMode::Dword(1),
+            HiddenMode::Dword(2),
+            HiddenMode::Dword(0xFFFF_FFFF),
         ] {
             let parameters = vec![
                 ("CNCA0".into(), Some("COM11".into()), None),
@@ -461,12 +506,12 @@ mod tests {
         }
     }
     #[test]
-    fn only_b_hiddenmode_yes_or_one_is_hidden() {
+    fn only_b_hiddenmode_yes_or_nonzero_is_hidden() {
         for mode in [
             None,
             Some(HiddenMode::Text("no".into())),
             Some(HiddenMode::Dword(0)),
-            Some(HiddenMode::Dword(2)),
+            Some(HiddenMode::Text("1".into())),
         ] {
             let parameters = vec![
                 (
@@ -486,12 +531,127 @@ mod tests {
             "--silent install PortName=COM14 HiddenMode=yes"
         );
         assert!(create_args("COM14 & bad").is_err());
-        let script = hide_script(&[4, 0, 4]);
-        assert_eq!(script.matches("--silent change").count(), 2);
-        assert!(script.contains("\"setupc.exe\" --silent change CNCB0 HiddenMode=yes\r\n"));
-        assert!(script.contains("\"setupc.exe\" --silent change CNCB4 HiddenMode=yes\r\n"));
-        assert_eq!(script.matches("if errorlevel 1").count(), 2);
-        assert!(script.ends_with("exit /b %serial_split_failed%\r\n"));
+        assert_eq!(
+            setup_commands(&Manage::HideBackends(vec![4, 0, 4])).unwrap(),
+            [
+                "--silent change CNCB0 HiddenMode=yes",
+                "--silent change CNCB4 HiddenMode=yes"
+            ]
+        );
+        assert!(
+            setup_commands(&Manage::HideBackends(Vec::new()))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(setup_commands(&Manage::Create("COM14 & bad".into())).is_err());
+    }
+    #[test]
+    fn every_setup_action_uses_absolute_paths_cwd_and_append_log() {
+        let setup = Path::new(r"C:\Program Files (x86)\com0com\setupc.exe");
+        let log = Path::new(r"C:\Users\tester\AppData\Local\Temp\serial-split-setupc.log");
+        for action in [
+            Manage::Create("com14".into()),
+            Manage::Delete(3),
+            Manage::HideBackends(vec![4, 0, 4]),
+        ] {
+            let commands = setup_commands(&action).unwrap();
+            let script = setup_script(setup, &commands, log).unwrap();
+            assert!(script.starts_with(&format!(
+                "cd /d \"{}\" >> \"{}\" 2>&1\r\n",
+                setup.parent().unwrap().display(),
+                log.display()
+            )));
+            assert!(!script.contains("\"setupc.exe\""));
+            for command in &commands {
+                assert!(script.contains(&format!(
+                    "echo [%date% %time%] \"{}\" {command} >> \"{}\"\r\n",
+                    setup.display(),
+                    log.display()
+                )));
+                assert!(script.contains(&format!("\"{}\" {command} >> \"{}\" 2>&1\r\nif errorlevel 1 set \"serial_split_failed=1\"\r\n",setup.display(),log.display())));
+            }
+            assert_eq!(
+                script.matches("if errorlevel 1 set").count(),
+                commands.len()
+            );
+            assert!(script.ends_with("exit /b %serial_split_failed%\r\n"));
+            assert!(script.contains("@if errorlevel 1 ("));
+        }
+        assert!(setup_script(Path::new("setupc.exe"), &[], log).is_err());
+        assert!(setup_script(setup, &[], Path::new("serial-split-setupc.log")).is_err());
+    }
+    #[test]
+    fn script_paths_escape_batch_expansion_and_launcher_supports_utf8() {
+        let setup = Path::new(r"C:\工具 & 100%\com0com\setupc.exe");
+        let log = Path::new(r"C:\用户\Temp\serial-split-setupc.log");
+        let script =
+            setup_script(setup, &setup_commands(&Manage::Delete(0)).unwrap(), log).unwrap();
+        assert!(script.starts_with("cd /d \"C:\\工具 & 100%%\\com0com\""));
+        assert!(script.contains("\"C:\\工具 & 100%%\\com0com\\setupc.exe\" --silent remove 0"));
+        let path = Path::new(r"C:\用户\Temp\serial-split-setupc-1.cmd");
+        assert_eq!(
+            script_args(path),
+            format!(
+                "/d /s /v:off /c \"chcp 65001 >nul && \"{}\"\"",
+                path.display()
+            )
+        );
+    }
+    #[test]
+    fn setup_failures_expose_preserved_log_path_and_cancel_stays_clear() {
+        let log = Path::new(r"C:\Temp\serial-split-setupc.log");
+        let error = setup_error("setupc 返回 1".into(), log);
+        assert!(error.contains("setupc 返回 1"));
+        assert!(error.contains(&log.display().to_string()));
+        assert_eq!(setup_error("已取消".into(), log), "已取消");
+    }
+    #[test]
+    fn generated_script_runs_with_cmd_stub_without_elevation_or_setupc() {
+        use std::os::windows::process::CommandExt;
+        let cmd = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32")
+            .join("cmd.exe");
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("脚本 & 测试-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let log = directory.join("serial-split-setupc.log");
+        let script = TemporaryScript(directory.join("stub.cmd"));
+        let text = setup_script(
+            &cmd,
+            &[
+                "/d /c \"echo serial_split_first & cd & exit /b 7\"".into(),
+                "/d /c \"echo serial_split_second & exit /b 0\"".into(),
+            ],
+            &log,
+        )
+        .unwrap();
+        std::fs::write(&script.0, text).unwrap();
+        let output = std::process::Command::new(&cmd)
+            .raw_arg(script_args(&script.0))
+            .current_dir(&directory)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let text =
+            std::fs::read_to_string(&log).unwrap_or_else(|error| panic!("{error}; {output:?}"));
+        assert!(text.lines().any(|line| line.trim() == "serial_split_first"));
+        assert!(
+            text.lines()
+                .any(|line| line.trim() == "serial_split_second")
+        );
+        assert!(text.lines().any(|line| {
+            line.trim()
+                .eq_ignore_ascii_case(&cmd.parent().unwrap().display().to_string())
+        }));
+        drop(script);
+        std::fs::remove_file(log).unwrap();
+        std::fs::remove_dir(directory).unwrap();
     }
     #[test]
     fn virtual_ports_filtered_and_test_switch_includes_only_a() {

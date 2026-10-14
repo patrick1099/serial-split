@@ -33,12 +33,13 @@ Windows 桌面串口分路器：让协议模拟器、串口助手等多个软件
 ## 虚拟口检测与管理
 
 - 从 com0com `Parameters` 和 Windows `SERIALCOMM` 注册表信息合并口对，按序号排序；名称优先采用 Parameters 的 `PortName`，没有时使用 `CNCA<n>`／`CNCB<n>` 默认名。即使 B 端不在 SERIALCOMM 中，也保留由 A 端确认的口对。
-- B 端隐藏状态取自 `Parameters\CNCB<n>\HiddenMode`：字符串 `yes`（不区分大小写）或 DWORD `1` 为隐藏，缺省或其他值为未隐藏。无 `PortName` 的 B 端子键仍可检测。
+- B 端隐藏状态取自 `Parameters\CNCB<n>\HiddenMode`：字符串 `yes`（不区分大小写）或任意非零 DWORD（包括 `0xFFFFFFFF`）为隐藏，缺省、DWORD `0` 或其他字符串为未隐藏。无 `PortName` 的 B 端子键仍可检测。
 - 普通物理口列表排除 com0com 的 A、B 两端；测试参数 `--include-virtual` 允许把 A 端作为假物理口，仍不列 B 端。
 - 新建口对校验 A 端名字、拒绝已存在的明确名字；建议可用 COM 名，也接受 `COM#` 让驱动分配。调用契约为 `setupc --silent install PortName=<名字> HiddenMode=yes`，新建时自动隐藏 B 端。
 - 存在未隐藏 B 端时，设置窗显示“隐藏本程序端”；点击后一次提权批量对这些端执行 `setupc --silent change CNCB<n> HiddenMode=yes`，结束后重新检测。全部隐藏时不显示按钮，列表不增加隐藏状态列。
 - 删除被分组使用的口对会被拒绝；其他口对通过 `setupc --silent remove <n>` 删除。管理操作在 setupc 所在目录运行，等待 Windows 提权确认，取消显示“已取消”，结束后重新检测；缺少 setupc 时提示“没装 com0com”。
 - 隐藏使用驱动的 HiddenMode 能力，目的是让本程序的 B 端尽可能不被其他串口软件枚举；具体枚举器是否尊重隐藏由驱动及外部软件决定。
+- 新建、删除和批量隐藏均保留诊断日志 `%TEMP%\serial-split-setupc.log`；每条命令的时间、命令内容和输出追加到日志。失败提示包含日志完整路径；操作结束后清理临时命令文件，保留日志供排查，取消提权仍只提示“已取消”。
 
 ## 录制与数据契约
 
